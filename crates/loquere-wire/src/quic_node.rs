@@ -61,6 +61,36 @@ pub struct QuicOutput {
     pub events: Vec<QuicEvent>,
 }
 
+/// Dati restituiti da una lettura non bloccante di stream QUIC.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuicStreamRead {
+    /// Byte letti in ordine, fino al limite richiesto.
+    pub bytes: Vec<u8>,
+    /// `true` se il peer ha terminato lo stream e tutti i byte sono stati letti.
+    pub finished: bool,
+}
+
+/// Errori delle operazioni applicative sugli stream.
+#[derive(Debug)]
+pub enum QuicStreamError {
+    /// La connessione non esiste più.
+    UnknownConnection,
+    /// Il limite di stream concorrenti è stato raggiunto.
+    StreamsExhausted,
+    /// Nessuno stream bidirezionale remoto è attualmente disponibile.
+    NoIncomingStream,
+    /// Errore durante la scrittura.
+    Write(quinn_proto::WriteError),
+    /// Errore durante la chiusura in scrittura.
+    Finish(quinn_proto::FinishError),
+    /// Lo stream non è leggibile al momento o è stato chiuso.
+    Readable(quinn_proto::ReadableError),
+    /// Errore durante l'estrazione dei dati.
+    Read(quinn_proto::ReadError),
+}
+
+const MAX_STREAM_READ_BYTES: usize = 64 * 1024;
+
 /// Endpoint QUIC sans-IO. Il socket, il clock monotono e l'invio dei datagrammi
 /// restano responsabilità del chiamante.
 pub struct QuicNode {
@@ -186,6 +216,106 @@ impl QuicNode {
         self.connections
             .get(&handle)
             .map(|connection| !connection.is_handshaking())
+    }
+
+    /// Apre uno stream bidirezionale QUIC.
+    pub fn open_bi_stream(
+        &mut self,
+        handle: ConnectionHandle,
+    ) -> Result<quinn_proto::StreamId, QuicStreamError> {
+        let connection = self
+            .connections
+            .get_mut(&handle)
+            .ok_or(QuicStreamError::UnknownConnection)?;
+        connection
+            .streams()
+            .open(quinn_proto::Dir::Bi)
+            .ok_or(QuicStreamError::StreamsExhausted)
+    }
+
+    /// Accetta uno stream bidirezionale remoto già notificato da un evento
+    /// `StreamEvent::Opened`.
+    pub fn accept_bi_stream(
+        &mut self,
+        handle: ConnectionHandle,
+    ) -> Result<quinn_proto::StreamId, QuicStreamError> {
+        let connection = self
+            .connections
+            .get_mut(&handle)
+            .ok_or(QuicStreamError::UnknownConnection)?;
+        connection
+            .streams()
+            .accept(quinn_proto::Dir::Bi)
+            .ok_or(QuicStreamError::NoIncomingStream)
+    }
+
+    /// Scrive byte su uno stream già aperto. La scrittura può essere parziale;
+    /// l'applicazione deve riprendere sui successivi eventi `Writable`.
+    pub fn write_stream(
+        &mut self,
+        handle: ConnectionHandle,
+        stream: quinn_proto::StreamId,
+        bytes: &[u8],
+    ) -> Result<usize, QuicStreamError> {
+        let connection = self
+            .connections
+            .get_mut(&handle)
+            .ok_or(QuicStreamError::UnknownConnection)?;
+        connection
+            .send_stream(stream)
+            .write(bytes)
+            .map_err(QuicStreamError::Write)
+    }
+
+    /// Segna la fine dei byte inviati sullo stream.
+    pub fn finish_stream(
+        &mut self,
+        handle: ConnectionHandle,
+        stream: quinn_proto::StreamId,
+    ) -> Result<(), QuicStreamError> {
+        let connection = self
+            .connections
+            .get_mut(&handle)
+            .ok_or(QuicStreamError::UnknownConnection)?;
+        connection
+            .send_stream(stream)
+            .finish()
+            .map_err(QuicStreamError::Finish)
+    }
+
+    /// Legge dati disponibili in ordine e avanza i timer/trasmissioni necessari
+    /// al controllo di flusso. Ogni chiamata alloca al massimo 64 KiB.
+    pub fn read_stream(
+        &mut self,
+        now: Instant,
+        handle: ConnectionHandle,
+        stream: quinn_proto::StreamId,
+        max_bytes: usize,
+    ) -> Result<(QuicStreamRead, QuicOutput), QuicStreamError> {
+        let limit = max_bytes.min(MAX_STREAM_READ_BYTES);
+        let connection = self
+            .connections
+            .get_mut(&handle)
+            .ok_or(QuicStreamError::UnknownConnection)?;
+        let mut recv_stream = connection.recv_stream(stream);
+        let mut chunks = recv_stream.read(true).map_err(QuicStreamError::Readable)?;
+        let mut bytes = Vec::with_capacity(limit);
+        let mut finished = false;
+        while bytes.len() < limit {
+            match chunks.next(limit - bytes.len()) {
+                Ok(Some(chunk)) => bytes.extend_from_slice(&chunk.bytes),
+                Ok(None) => {
+                    finished = true;
+                    break;
+                }
+                Err(quinn_proto::ReadError::Blocked) => break,
+                Err(error) => return Err(QuicStreamError::Read(error)),
+            }
+        }
+        let _should_transmit = chunks.finalize();
+        let mut output = QuicOutput::default();
+        self.pump(now, &mut output);
+        Ok((QuicStreamRead { bytes, finished }, output))
     }
 
     fn pump(&mut self, now: Instant, output: &mut QuicOutput) {
@@ -413,6 +543,27 @@ mod tests {
         assert!(client_connected, "client QUIC handshake did not finish");
         assert!(server_connected, "server QUIC handshake did not finish");
         assert_eq!(client.is_established(client_handle), Some(true));
+
+        let server_handle = *server.connections.keys().next().unwrap();
+        let stream = client.open_bi_stream(client_handle).unwrap();
+        assert_eq!(
+            client
+                .write_stream(client_handle, stream, b"hello from loquere")
+                .unwrap(),
+            b"hello from loquere".len()
+        );
+        client.finish_stream(client_handle, stream).unwrap();
+        let now = start + Duration::from_secs(2);
+        let outgoing = client.poll(now);
+        for datagram in outgoing.datagrams {
+            let _ = server.receive(now, client_addr, None, None, &datagram.payload);
+        }
+        let incoming_stream = server.accept_bi_stream(server_handle).unwrap();
+        let (read, _output) = server
+            .read_stream(now, server_handle, incoming_stream, MAX_STREAM_READ_BYTES)
+            .unwrap();
+        assert_eq!(read.bytes, b"hello from loquere");
+        assert!(read.finished);
     }
 
     fn enqueue_output(
