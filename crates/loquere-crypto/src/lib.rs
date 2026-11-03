@@ -74,6 +74,11 @@ impl SecretKey {
         PublicKey(self.0.verifying_key().to_bytes())
     }
 
+    /// Copia la chiave segreta in un buffer che viene azzerato al rilascio.
+    pub fn to_bytes(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(self.0.to_bytes())
+    }
+
     /// Firma i byte esatti del messaggio.
     pub fn sign(&self, message: &[u8]) -> Signature {
         Signature(self.0.sign(message).to_bytes())
