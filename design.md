@@ -965,6 +965,8 @@ Loquere/
 
 **D-29. Driver QUIC sans-IO.** `QuicNode` incapsula `quinn-proto::Endpoint` e le connessioni; riceve datagrammi già filtrati, tempo monotono e indirizzi dal chiamante, e restituisce datagrammi/eventi senza aprire socket o leggere clock di sistema. La scelta e la gestione dei socket UDP restano fuori da `loquere-wire`.
 
+**D-30. Eventi di trasporto verso l'engine.** Il driver non interpreta gli eventi applicativi di QUIC: consegna allo strato superiore notifiche di stream e datagrammi, oltre a connessione stabilita/persa. Una connessione persa viene rimossa dalla tabella interna dopo aver consumato gli eventi terminali.
+
 ---
 
 ## 17. Sicurezza e privacy
@@ -1233,6 +1235,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Simulatore | SplitMix64 deterministico per seed, link con latenza/jitter/perdita/banda/partizioni | §22 (D-27) |
 | Token Retry QUIC | HKDF-SHA256 domain-separated + ChaCha20-Poly1305; tempo iniettato | §8.3 (D-28) |
 | Driver QUIC | `QuicNode` sans-IO sopra `quinn-proto`; ingressi/uscite espliciti, socket al chiamante | §8.3 (D-29) |
+| Eventi QUIC | Eventi stream/datagrammi inoltrati all'engine; connessioni perse ripulite | §8.3 (D-30) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

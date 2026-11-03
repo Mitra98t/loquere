@@ -27,16 +27,27 @@ pub struct QuicTransmit {
 }
 
 /// Eventi applicativi essenziali prodotti dalle connessioni.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum QuicEvent {
     /// Handshake TLS/QUIC completato.
     Connected(ConnectionHandle),
     /// Connessione chiusa o persa.
     Lost(ConnectionHandle),
+    /// Un'applicazione deve elaborare l'evento di uno stream.
+    Stream {
+        /// Connessione proprietaria dello stream.
+        connection: ConnectionHandle,
+        /// Evento Quinn da passare allo strato applicativo.
+        event: quinn_proto::StreamEvent,
+    },
+    /// Uno o più datagrammi applicativi sono pronti alla lettura.
+    DatagramReceived(ConnectionHandle),
+    /// Un precedente invio di datagrammi applicativi è ora sbloccato.
+    DatagramsUnblocked(ConnectionHandle),
 }
 
 /// Uscite in risposta a un input o a un avanzamento del timer.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default, Eq, PartialEq)]
 pub struct QuicOutput {
     /// Datagrams pronti per il socket UDP del chiamante.
     pub datagrams: Vec<QuicTransmit>,
@@ -174,6 +185,7 @@ impl QuicNode {
 
     fn pump(&mut self, now: Instant, output: &mut QuicOutput) {
         let handles: Vec<_> = self.connections.keys().copied().collect();
+        let mut lost = Vec::new();
         for handle in handles {
             let Some(connection) = self.connections.get_mut(&handle) else {
                 continue;
@@ -196,13 +208,26 @@ impl QuicNode {
             while let Some(event) = connection.poll() {
                 match event {
                     Event::Connected => output.events.push(QuicEvent::Connected(handle)),
-                    Event::ConnectionLost { .. } => output.events.push(QuicEvent::Lost(handle)),
-                    Event::HandshakeDataReady
-                    | Event::Stream(_)
-                    | Event::DatagramReceived
-                    | Event::DatagramsUnblocked => {}
+                    Event::ConnectionLost { .. } => {
+                        output.events.push(QuicEvent::Lost(handle));
+                        lost.push(handle);
+                    }
+                    Event::Stream(event) => output.events.push(QuicEvent::Stream {
+                        connection: handle,
+                        event,
+                    }),
+                    Event::DatagramReceived => {
+                        output.events.push(QuicEvent::DatagramReceived(handle));
+                    }
+                    Event::DatagramsUnblocked => {
+                        output.events.push(QuicEvent::DatagramsUnblocked(handle));
+                    }
+                    Event::HandshakeDataReady => {}
                 }
             }
+        }
+        for handle in lost {
+            self.connections.remove(&handle);
         }
         output.events.dedup();
     }
@@ -402,6 +427,9 @@ mod tests {
                 QuicEvent::Connected(_) if owner == 1 => *server_connected = true,
                 QuicEvent::Connected(_) => {}
                 QuicEvent::Lost(_) => panic!("connection lost during handshake"),
+                QuicEvent::Stream { .. }
+                | QuicEvent::DatagramReceived(_)
+                | QuicEvent::DatagramsUnblocked(_) => {}
             }
         }
     }
