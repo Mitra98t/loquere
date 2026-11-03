@@ -1,0 +1,12 @@
+[package]
+name = "loquere-crypto"
+description = "Primitive crittografiche e tipi chiave per Loquere"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ed25519-dalek.workspace = true
+rand_core.workspace = true
+zeroize.workspace = true
