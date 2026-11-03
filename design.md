@@ -71,8 +71,8 @@ ArtCraft pubblica una famiglia di applicazioni desktop native ("Crafting Apps") 
 | Nativo, non "wrappato": Rust puro, niente Electron o web view | UI in `egui`, binario nativo unico per piattaforma. |
 | Familiare dal primo giorno | Layout da app di chat conosciuta: barra laterale contatti/gruppi, conversazione al centro, griglia video in chiamata. Scorciatoie standard (push-to-talk, muto, ecc.). |
 | I tuoi file, la tua macchina | Identità, contatti e cronologia restano solo sul disco dell'utente, cifrati. Nessun cloud. Qui il principio è portato all'estremo: neanche la rete ha un centro. |
-| Agent-ready (CLI, canale di controllo JSON, MCP) | `Loquere-cli`, flag `--control <porta>`, server MCP con conferma esplicita per le azioni che contattano altre persone. |
-| Workspace di crate con nome `<app>-<area>` | `Loquere-wire`, `Loquere-mesh`, `Loquere-call`, ecc. (§5.2). |
+| Agent-ready (CLI, canale di controllo JSON, MCP) | `loquere-cli`, flag `--control <porta>`, server MCP con conferma esplicita per le azioni che contattano altre persone. |
+| Workspace di crate con nome `<app>-<area>` | `loquere-wire`, `loquere-mesh`, `loquere-call`, ecc. (§5.2). |
 | Distribuzione tramite ArtCraft Launcher, build per molte architetture, checksum SHA-256 | Progetto indipendente: rilasci propri (non tramite ArtCraft Launcher), con lo stesso tipo di pipeline: `.dmg` universale, `.msi` x64/ARM64, Flatpak/AppImage/deb/rpm, tarball FreeBSD, `SHA256SUMS.txt`. |
 | Riuso tra app della famiglia | I/O audio con `cpal` invece del backend di SoundCraft, per non legare i cicli di rilascio. Resta il riuso del decoder H.264 in Rust puro dell'ecosistema (§14.2). |
 
@@ -129,47 +129,47 @@ La 0.1 proponeva anche, come opzione, la pubblicazione cifrata del proprio indir
 ┌───────────────────────────────────────────────────────────────────┐
 │ UI (egui)              CLI              Control JSON / MCP        │  app/
 ├───────────────────────────────────────────────────────────────────┤
-│                      Loquere-engine                               │  comandi, eventi,
+│                      loquere-engine                               │  comandi, eventi,
 │        (facciata unica: comandi in ingresso, eventi in uscita)    │  stato applicativo
 ├──────────────┬──────────────┬───────────────┬─────────────────────┤
-│ Loquere-     │ Loquere-     │ Loquere-      │ Loquere-store       │
+│ loquere-     │ loquere-     │ loquere-      │ loquere-store       │
 │ chat         │ call         │ media         │ (persistenza)       │
 │ (messaggi,   │ (segnalaz.,  │ (audio, video,│                     │
 │  sync, file) │  elezione    │  jitter, CC)  │                     │
 │              │  host)       │               │                     │
 ├──────────────┴──────────────┴───────────────┴─────────────────────┤
-│ Loquere-mesh   (tabella peer, percorsi, relay, gossip indirizzi)  │
+│ loquere-mesh   (tabella peer, percorsi, relay, gossip indirizzi)  │
 ├───────────────────────────────────────────────────────────────────┤
-│ Loquere-wire   (filtro silenzioso, QUIC/TLS, canali, datagrammi)  │
+│ loquere-wire   (filtro silenzioso, QUIC/TLS, canali, datagrammi)  │
 ├───────────────────────────────────────────────────────────────────┤
-│ Loquere-net    (socket UDP, NAT, PCP/UPnP, hole punching, LAN)    │
+│ loquere-net    (socket UDP, NAT, PCP/UPnP, hole punching, LAN)    │
 ├───────────────────────────────────────────────────────────────────┤
-│ Loquere-crypto / Loquere-identity                                 │
+│ loquere-crypto / loquere-identity                                 │
 └───────────────────────────────────────────────────────────────────┘
-        Loquere-devices (microfono, altoparlanti, webcam) ──► media
+        loquere-devices (microfono, altoparlanti, webcam) ──► media
 ```
 
 ### 5.2 Workspace
 
 ```
-Loquere/
+loquere/
 ├── crates/
-│   ├── Loquere-crypto      # wrapper sulle primitive, tipi chiave, zeroize, portachiavi OS
-│   ├── Loquere-identity    # account, dispositivi, profilo, inviti, backup
-│   ├── Loquere-wire        # filtro silenzioso, quinn-proto + rustls, verificatore chiavi, canali
-│   ├── Loquere-net         # socket, candidati, PCP/NAT-PMP/UPnP, punching, LAN
-│   ├── Loquere-mesh        # peer table, scelta percorsi, circuiti relay, gossip
-│   ├── Loquere-call        # stato chiamata, topologia, elezione host, chiavi media
-│   ├── Loquere-media       # pipeline audio/video, jitter buffer, congestion control
-│   ├── Loquere-devices     # I/O audio e cattura video per piattaforma
-│   ├── Loquere-chat        # conversazioni, MLS, DAG messaggi, sync, casella postale, file
-│   ├── Loquere-store       # log append-only cifrati, indici, configurazione
-│   ├── Loquere-engine      # comandi, eventi, orchestrazione
-│   ├── Loquere-control     # canale JSON e server MCP
-│   └── Loquere-sim         # simulatore di rete deterministico per i test (§22)
+│   ├── loquere-crypto      # wrapper sulle primitive, tipi chiave, zeroize, portachiavi OS
+│   ├── loquere-identity    # account, dispositivi, profilo, inviti, backup
+│   ├── loquere-wire        # filtro silenzioso, quinn-proto + rustls, verificatore chiavi, canali
+│   ├── loquere-net         # socket, candidati, PCP/NAT-PMP/UPnP, punching, LAN
+│   ├── loquere-mesh        # peer table, scelta percorsi, circuiti relay, gossip
+│   ├── loquere-call        # stato chiamata, topologia, elezione host, chiavi media
+│   ├── loquere-media       # pipeline audio/video, jitter buffer, congestion control
+│   ├── loquere-devices     # I/O audio e cattura video per piattaforma
+│   ├── loquere-chat        # conversazioni, MLS, DAG messaggi, sync, casella postale, file
+│   ├── loquere-store       # log append-only cifrati, indici, configurazione
+│   ├── loquere-engine      # comandi, eventi, orchestrazione
+│   ├── loquere-control     # canale JSON e server MCP
+│   └── loquere-sim         # simulatore di rete deterministico per i test (§22)
 └── apps/
     ├── Loquere             # app desktop (egui)
-    └── Loquere-cli         # CLI e modalità nodo headless
+    └── loquere-cli         # CLI e modalità nodo headless
 ```
 
 ### 5.3 Principio "sans-IO" (D-01)
@@ -177,7 +177,7 @@ Loquere/
 **D-01.** Tutta la logica di protocollo (`wire`, `mesh`, `call`, `chat`) è scritta come **macchine a stati pure**: ricevono eventi (`pacchetto ricevuto`, `timer scaduto`, `comando utente`) con un orologio iniettato, e restituiscono azioni (`invia pacchetto`, `imposta timer`, `emetti evento`). Nessuna di queste crate apre socket o legge l'orologio di sistema.
 
 Motivazioni:
-- test deterministici di scenari di rete complessi (NAT, perdita, partizioni, cambio host) nel simulatore `Loquere-sim`, senza rete reale;
+- test deterministici di scenari di rete complessi (NAT, perdita, partizioni, cambio host) nel simulatore `loquere-sim`, senza rete reale;
 - nessun runtime asincrono richiesto nel cuore del protocollo;
 - riproducibilità dei bug: un log di eventi riproduce esattamente la sessione.
 
@@ -286,7 +286,7 @@ DeviceList {
 ### 7.1 Formato del link
 
 ```
-Loquere://invite/<payload-base32>
+loquere://invite/<payload-base32>
 ```
 
 oppure, per i canali che non rendono cliccabili gli schemi personalizzati, il solo testo `TC1-<payload-base32>` da incollare nell'app, e un **codice QR** con lo stesso contenuto.
@@ -388,7 +388,7 @@ Tra due dispositivi c'è **una connessione QUIC** (ALPN `loquere/1`), che multip
 - suite preferita `TLS_CHACHA20_POLY1305_SHA256`, con AES-GCM ammesso dove c'è accelerazione hardware; provider crittografico `ring`;
 - il primo messaggio sullo stream di controllo dice perché ci si collega: `FriendRequest{token}`, `Hello{}` tra amici, `DeviceLink{token}` tra dispositivi dello stesso account (§6.4), oppure `CallJoin{call_ticket}` tra partecipanti non amici di una chiamata (§12.2). Se non è autorizzato, la connessione viene chiusa senza motivazione.
 
-**D-14. Filtro silenzioso (Loquere-gate).** QUIC, da solo, risponde a chiunque mandi un pacchetto iniziale ben formato: una scansione capirebbe che lì c'è un servizio, e il parser TLS sarebbe esposto a tutti. Per evitarlo, il socket passa da un filtro, sotto `quinn-proto`, che scarta senza risposta tutto ciò che non supera questi controlli:
+**D-14. Filtro silenzioso (loquere-gate).** QUIC, da solo, risponde a chiunque mandi un pacchetto iniziale ben formato: una scansione capirebbe che lì c'è un servizio, e il parser TLS sarebbe esposto a tutti. Per evitarlo, il socket passa da un filtro, sotto `quinn-proto`, che scarta senza risposta tutto ciò che non supera questi controlli:
 
 - **Pacchetti iniziali** (header lungo QUIC): devono essere preceduti da un prefisso di 24 byte, `timestamp (8 B) ‖ MAC (16 B)`, con `MAC = BLAKE2s-MAC(chiave = BLAKE2s("loquere-gate" ‖ DK_destinatario), timestamp ‖ pacchetto)`. Chi non conosce la chiave del dispositivo di destinazione non passa. Il timestamp deve stare in una finestra di ±120 s e non essere già stato visto da quella sorgente: un pacchetto registrato non può essere **rigiocato** per sapere se il nodo è online.
 - **Pacchetti successivi** (header corto): i Connection ID li generiamo noi come `casuale ‖ MAC(chiave locale, casuale)`, quindi il filtro riconosce quelli validi senza tenere stato. Nessun byte in più sui pacchetti dei media.
@@ -830,7 +830,7 @@ Webcam → conversione colore/scala → encoder (simulcast 2–3 strati) → cif
 
 Il benchmark di M4 su un portatile di fascia media di 4 anni fa non è più un go/no-go, ma serve a tarare le preferenze predefinite e la risoluzione massima di `rav1e`.
 
-**Cattura:** binding diretti alle API di sistema (AVFoundation su macOS, Media Foundation su Windows, V4L2 su Linux/FreeBSD), dentro `Loquere-devices`.
+**Cattura:** binding diretti alle API di sistema (AVFoundation su macOS, Media Foundation su Windows, V4L2 su Linux/FreeBSD), dentro `loquere-devices`.
 
 **Rendering:** texture `wgpu` dentro egui; conversione YUV→RGB in shader.
 
@@ -982,7 +982,7 @@ Ogni contatto ha un **numero di sicurezza** (impronta delle due identità) confr
 ### 17.4 Igiene crittografica
 
 - Solo primitive e protocolli da librerie consolidate e revisionate (`rustls` per TLS 1.3, `openmls` per MLS); **nessuna crittografia scritta in casa** (solo la composizione: filtro silenzioso, verificatore delle chiavi, record).
-- `#![forbid(unsafe_code)]` in `Loquere-wire`, `Loquere-mesh`, `Loquere-call`, `Loquere-chat`, `Loquere-identity`.
+- `#![forbid(unsafe_code)]` in `loquere-wire`, `loquere-mesh`, `loquere-call`, `loquere-chat`, `loquere-identity`.
 - `zeroize` sulle chiavi in memoria.
 - Revisione esterna del protocollo prima della v1.0 (budget da prevedere).
 - Fuzzing di tutti i parser di pacchetti e record.
@@ -1021,26 +1021,26 @@ Ogni contatto ha un **numero di sicurezza** (impronta delle due identità) confr
 ### 19.1 CLI
 
 ```sh
-Loquere-cli id new --name "Alice"            # crea account (portachiavi o passphrase)
-Loquere-cli device link                       # su un nuovo dispositivo: mostra il codice da approvare
-Loquere-cli device approve "TCL-…"            # su un dispositivo Admin: approva, mostra il codice di verifica
-Loquere-cli device list
-Loquere-cli device revoke "MacBook vecchio"
-Loquere-cli invite create --single-use --expires 7d
-Loquere-cli friend add "Loquere://invite/…"
-Loquere-cli friend list
-Loquere-cli send --to bob "ci sentiamo alle 18"
-Loquere-cli call --to bob,carla --audio
-Loquere-cli net status                        # candidati, NAT, relay, peer
+loquere-cli id new --name "Alice"            # crea account (portachiavi o passphrase)
+loquere-cli device link                       # su un nuovo dispositivo: mostra il codice da approvare
+loquere-cli device approve "TCL-…"            # su un dispositivo Admin: approva, mostra il codice di verifica
+loquere-cli device list
+loquere-cli device revoke "MacBook vecchio"
+loquere-cli invite create --single-use --expires 7d
+loquere-cli friend add "loquere://invite/…"
+loquere-cli friend list
+loquere-cli send --to bob "ci sentiamo alle 18"
+loquere-cli call --to bob,carla --audio
+loquere-cli net status                        # candidati, NAT, relay, peer
 ```
 
 ### 19.2 Canale di controllo JSON
 
-Come in SoundCraft: `Loquere --control 7801` apre un canale JSON **solo su localhost**, protetto da un token scritto in un file leggibile solo dall'utente. Comandi e eventi sono gli stessi di `Loquere-engine`.
+Come in SoundCraft: `loquere --control 7801` apre un canale JSON **solo su localhost**, protetto da un token scritto in un file leggibile solo dall'utente. Comandi e eventi sono gli stessi di `loquere-engine`.
 
 ```sh
-Loquere-cli app --port 7801 call.mute '{"muted":true}'
-Loquere-cli app --port 7801 net.inspect
+loquere-cli app --port 7801 call.mute '{"muted":true}'
+loquere-cli app --port 7801 net.inspect
 ```
 
 ### 19.3 Server MCP
@@ -1050,7 +1050,7 @@ Espone strumenti per agenti (leggere conversazioni, riassumere, stato rete, ecc.
 ### 19.4 Nodo headless ("àncora")
 
 ```sh
-Loquere-cli node --anchor --relay-kbps 20000 --mailbox-days 30
+loquere-cli node --anchor --relay-kbps 20000 --mailbox-days 30
 ```
 
 Stesso codice, senza interfaccia: ideale su un Raspberry Pi o un piccolo VPS. Può essere un'identità a sé oppure un **dispositivo Member del proprio account** (§6.4): in quel caso fa da relay personale e casella postale per i propri dispositivi, e da àncora per gli amici solo se lo si abilita. Non custodisce mai `IK`. Fa da coordinatore di hole punching, relay, casella postale e, in futuro, host esterno per le chiamate dei propri amici. È il modo pratico di risolvere R-01 restando fedeli al "nessun server": **è un nodo come gli altri, con un'identità propria, che fa solo ciò che i suoi amici gli chiedono.**
@@ -1097,7 +1097,7 @@ Stesso codice, senza interfaccia: ideale su un Raspberry Pi o un piccolo VPS. Pu
 | Audio I/O | `cpal` | microfono e altoparlanti | binding OS |
 | Video codec | `rav1e`, `rav1d`; decoder H.264 in Rust puro dell'ecosistema; encoder hardware via API di sistema | AV1 e H.264 (D-17) | Rust + assembly / binding |
 | Binding OS | `objc2` (macOS), `windows` (Windows), `libc` | cattura video, encoder HW, portachiavi | binding |
-| Canale di controllo | `serde`, `serde_json` | solo per `Loquere-control` | ✅ |
+| Canale di controllo | `serde`, `serde_json` | solo per `loquere-control` | ✅ |
 | Log | `log` + scrittore interno | come SoundCraft | ✅ |
 
 **Implementati internamente** (niente crate): filtro silenzioso, verificatore delle chiavi per `rustls`, guida di `quinn-proto` dal thread `net`, controllo del bitrate dei media, jitter buffer, ring buffer RT, PCP/NAT-PMP, beacon LAN, codifica binaria dei record, archiviazione a log, ordinamento dei commit MLS, frase di recupero (lista di parole inclusa come asset), simulatore di rete.
@@ -1121,7 +1121,7 @@ Stesso codice, senza interfaccia: ideale su un Raspberry Pi o un piccolo VPS. Pu
 ## 22. Strategia di test
 
 1. **Unit e property test** su ogni macchina a stati sans-IO.
-2. **Simulatore di rete deterministico** (`Loquere-sim`): N nodi virtuali, ciascuno dietro un NAT simulato (full cone, restricted, port-restricted, simmetrico, CGNAT, solo IPv6, firewall rigido), con latenza, jitter, perdita e banda per collegamento, partizioni e ricongiungimenti, tutto con seme fisso. Scenari obbligatori in CI:
+2. **Simulatore di rete deterministico** (`loquere-sim`): N nodi virtuali, ciascuno dietro un NAT simulato (full cone, restricted, port-restricted, simmetrico, CGNAT, solo IPv6, firewall rigido), con latenza, jitter, perdita e banda per collegamento, partizioni e ricongiungimenti, tutto con seme fisso. Scenari obbligatori in CI:
    - due nodi dietro NAT simmetrico con un amico comune raggiungibile → relay;
    - chiamata a 6 con host che perde banda a metà → cambio pianificato senza buchi audio;
    - host che sparisce di colpo → successione < 1,5 s;
@@ -1201,6 +1201,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | "Nascondi il mio IP" | **attivo di default** verso i non-amici, opt-in verso tutti | §17.2 |
 | Mobile | **push opzionale**: UnifiedPush su Android, gateway minimo del progetto su iOS (D-19) | §20 |
 | Limiti di gruppo | **16 audio / 8 video** | §2.1 |
+| Nomi di crate e binari | **tutto minuscolo** (`loquere-wire`, `loquere-cli`, schema `loquere://`); "Loquere" solo come nome del prodotto e della cartella dati | §5.2 |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

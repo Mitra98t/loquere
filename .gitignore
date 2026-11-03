@@ -1,0 +1,52 @@
+# Build Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Fuzzing
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/
+
+# Profiling e benchmark
+*.profraw
+*.profdata
+flamegraph.svg
+perf.data*
+
+# Dati locali di sviluppo (identità, chiavi, log di prova)
+/.loquere-dev/
+*.tck
+.env
+.env.*
+
+# Pacchetti di rilascio
+/dist/
+*.dmg
+*.msi
+*.AppImage
+*.deb
+*.rpm
+
+# Editor e sistema operativo
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Claude Code: impostazioni personali e note locali
+.claude/settings.local.json
+CLAUDE.local.md
+
+# Istruzioni per agenti e documentazione: sempre versionate,
+# anche se una regola sopra dovesse includerle.
+!AGENTS.md
+!**/AGENTS.md
+!CLAUDE.md
+!**/CLAUDE.md
+!design.md
+!.claude/
+!.claude/settings.json
