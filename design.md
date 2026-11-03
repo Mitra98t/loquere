@@ -955,6 +955,8 @@ Loquere/
 
 **D-11.** Nessun database esterno: **log append-only a segmenti** con indice in memoria ricostruito all'avvio e snapshot periodici. Ogni record è cifrato singolarmente con una chiave derivata da `MK` (§6.1). Semplice, robusto ai crash (un record troncato in coda si scarta), nessuna dipendenza. Alternativa se gli indici diventano complessi: `redb` (Rust puro).
 
+**D-25. Framing del log locale.** Ogni record è `lunghezza (u32 little-endian) ‖ SealedBox-v1`; massimo 16 MiB ciphertext per record. I dati associati AEAD sono `loquere:store-record:v1\0 ‖ seq(u64 little-endian)`, dove `seq` è l'ordine del record dal valore zero. All'avvio una coda con header/ciphertext incompleto viene troncata all'ultimo record valido; lunghezze impossibili e tag non validi sono errori, non vengono scartati come se fossero crash.
+
 ---
 
 ## 17. Sicurezza e privacy
@@ -1217,6 +1219,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Formato del payload `identity.tck` | payload binario versionato, autenticato con ChaCha20-Poly1305 | §16 (D-22) |
 | Protezione account con passphrase | MK casuale avvolta da Argon2id in un envelope esterno versionato | §6.1 (D-23) |
 | Payload invito verificabile | include `DeviceCert` completo; firma DK domain-separated e Base32 RFC 4648 | §7.1 (D-24) |
+| Framing append-only locale | lunghezza u32 LE + envelope AEAD; sequenza autenticata; limite 16 MiB | §16 (D-25) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

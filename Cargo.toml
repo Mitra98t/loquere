@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/loquere-crypto", "crates/loquere-identity"]
+members = ["crates/loquere-crypto", "crates/loquere-identity", "crates/loquere-store"]
 
 [workspace.package]
 version = "0.1.0"

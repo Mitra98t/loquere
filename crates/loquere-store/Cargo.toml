@@ -1,0 +1,11 @@
+[package]
+name = "loquere-store"
+description = "Persistenza locale append-only cifrata per Loquere"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+loquere-crypto = { path = "../loquere-crypto" }
+zeroize.workspace = true
