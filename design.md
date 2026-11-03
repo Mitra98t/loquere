@@ -400,7 +400,7 @@ Tra due dispositivi c'è **una connessione QUIC** (ALPN `loquere/1`), che multip
 
 **D-14. Filtro silenzioso (loquere-gate).** QUIC, da solo, risponde a chiunque mandi un pacchetto iniziale ben formato: una scansione capirebbe che lì c'è un servizio, e il parser TLS sarebbe esposto a tutti. Per evitarlo, il socket passa da un filtro, sotto `quinn-proto`, che scarta senza risposta tutto ciò che non supera questi controlli:
 
-- **Pacchetti iniziali** (header lungo QUIC): devono essere preceduti da un prefisso di 24 byte, `timestamp (8 B) ‖ MAC (16 B)`, con `MAC = BLAKE2s-MAC(chiave = BLAKE2s("loquere-gate" ‖ DK_destinatario), timestamp ‖ pacchetto)`. Chi non conosce la chiave del dispositivo di destinazione non passa. Il timestamp deve stare in una finestra di ±120 s e non essere già stato visto da quella sorgente: un pacchetto registrato non può essere **rigiocato** per sapere se il nodo è online.
+- **Pacchetti iniziali** (header lungo QUIC): devono essere preceduti da un prefisso di 40 byte, `timestamp (8 B) ‖ gate_key_id (16 B) ‖ MAC (16 B)`. `gate_key_id` è un identificatore opaco derivato da una credenziale casuale condivisa per relazione; il MAC keyed BLAKE2s copre `timestamp ‖ gate_key_id ‖ pacchetto QUIC` e la chiave deriva con HKDF-SHA256 dalla credenziale e dal `DK` del destinatario. Nel primo contatto la credenziale è il token casuale dell'invito (bearer secret), poi viene conservata per la relazione. Il solo `DeviceId` pubblico non è una chiave e non autorizza pacchetti. Il timestamp deve stare in una finestra di ±120 s e il pacchetto non deve essere già stato visto da quella sorgente.
 - **Pacchetti successivi** (header corto): i Connection ID li generiamo noi come `casuale ‖ MAC(chiave locale, casuale)`, quindi il filtro riconosce quelli validi senza tenere stato. Nessun byte in più sui pacchetti dei media.
 - Tutto il resto (versioni sconosciute, Connection ID inventati, pacchetti troncati) viene scartato. `quinn-proto` non invia mai *version negotiation* né *stateless reset* verso l'esterno.
 
@@ -969,6 +969,8 @@ Loquere/
 
 **D-31. Metadati UDP QUIC.** Il driver conserva su ogni `Transmit` destinazione, IP sorgente richiesto, ECN e segmentazione GSO; i metadati ECN ricevuti sono passati a `quinn-proto`. Il layer socket applica questi suggerimenti quando supportati dal sistema operativo e dal percorso.
 
+**D-32. Credenziale segreta del filtro.** Il MAC pre-autenticazione non usa più il DeviceId pubblico come chiave. Ogni relazione usa un segreto casuale condiviso; il token segreto dell'invito lo inizializza al primo contatto e viene conservato alla successiva accettazione. Il prefisso porta un key ID opaco per selezionare la credenziale locale; la chiave MAC è derivata con HKDF-SHA256 e domain separation sul DeviceId destinatario.
+
 ---
 
 ## 17. Sicurezza e privacy
@@ -1242,6 +1244,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Driver QUIC | `QuicNode` sans-IO sopra `quinn-proto`; ingressi/uscite espliciti, socket al chiamante | §8.3 (D-29) |
 | Eventi QUIC | Eventi stream/datagrammi inoltrati all'engine; connessioni perse ripulite | §8.3 (D-30) |
 | Metadati UDP | Destinazione, IP sorgente, ECN e segment size preservati attraverso il confine sans-IO | §8.3 (D-31) |
+| Gate pre-autenticazione | Token invito/segreto peer + HKDF destinatario; key ID opaco, non chiave pubblica | §8.3 (D-32) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

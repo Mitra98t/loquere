@@ -1,14 +1,21 @@
 use blake2::digest::{Mac, consts::U16};
 use blake2::{Blake2s256, Blake2sMac, Digest};
+use hkdf::Hkdf;
+use sha2::Sha256;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use subtle::ConstantTimeEq;
+use zeroize::Zeroizing;
 
-const PREFIX_LEN: usize = 24;
+const PREFIX_LEN: usize = 40;
+const KEY_ID_LEN: usize = 16;
+const TAG_LEN: usize = 16;
 const TIMESTAMP_WINDOW_SECONDS: u64 = 120;
 const MAX_TRACKED_SOURCES: usize = 1024;
 const MAX_REPLAYS_PER_SOURCE: usize = 4096;
-const GATE_DOMAIN: &[u8] = b"loquere-gate";
+const GATE_DOMAIN: &[u8] = b"loquere:gate:v2";
+const GATE_KEY_INFO: &[u8] = b"loquere:gate-mac:v2\0";
+const GATE_KEY_ID_DOMAIN: &[u8] = b"loquere:gate-key-id:v2\0";
 
 type GateMac = Blake2sMac<U16>;
 
@@ -31,6 +38,7 @@ struct SourceReplayState {
 /// vengono forniti dal proprietario del socket.
 pub struct SilentFilter {
     device_id: [u8; 32],
+    credentials: HashMap<[u8; KEY_ID_LEN], Zeroizing<[u8; 32]>>,
     replay_state: HashMap<SocketAddr, SourceReplayState>,
 }
 
@@ -39,8 +47,34 @@ impl SilentFilter {
     pub fn new(device_id: [u8; 32]) -> Self {
         Self {
             device_id,
+            credentials: HashMap::new(),
             replay_state: HashMap::new(),
         }
+    }
+
+    /// Autorizza una credenziale segreta condivisa e restituisce il suo key ID
+    /// opaco da inserire nel prefisso dei pacchetti iniziali.
+    pub fn authorize_secret(&mut self, secret: &[u8]) -> Result<[u8; KEY_ID_LEN], GateError> {
+        let key = derive_gate_key(secret, &self.device_id)?;
+        let key_id = gate_key_id(&key);
+        if let Some(existing) = self.credentials.get(&key_id) {
+            if !bool::from(existing.as_slice().ct_eq(key.as_slice())) {
+                return Err(GateError::KeyIdCollision);
+            }
+        } else {
+            self.credentials.insert(key_id, key);
+        }
+        Ok(key_id)
+    }
+
+    /// Revoca una credenziale precedentemente autorizzata.
+    pub fn revoke_key_id(&mut self, key_id: &[u8; KEY_ID_LEN]) -> bool {
+        self.credentials.remove(key_id).is_some()
+    }
+
+    /// Numero di credenziali segrete attualmente autorizzate.
+    pub fn authorized_credentials(&self) -> usize {
+        self.credentials.len()
     }
 
     /// Controlla un datagramma iniziale. Scarta ogni pacchetto malformato,
@@ -62,20 +96,19 @@ impl SilentFilter {
         if timestamp.abs_diff(now_unix_seconds) > TIMESTAMP_WINDOW_SECONDS {
             return GateDecision::Drop;
         }
-        let provided_mac = &datagram[8..PREFIX_LEN];
+        let key_id: [u8; KEY_ID_LEN] = match datagram[8..8 + KEY_ID_LEN].try_into() {
+            Ok(key_id) => key_id,
+            Err(_) => return GateDecision::Drop,
+        };
+        let provided_mac = &datagram[8 + KEY_ID_LEN..PREFIX_LEN];
         let packet = &datagram[PREFIX_LEN..];
         if packet[0] & 0x80 == 0 {
             return GateDecision::Drop;
         }
-
-        let key = gate_key(&self.device_id);
-        let mut mac = match GateMac::new_from_slice(&key) {
-            Ok(mac) => mac,
-            Err(_) => return GateDecision::Drop,
+        let Some(key) = self.credentials.get(&key_id) else {
+            return GateDecision::Drop;
         };
-        mac.update(&timestamp_bytes);
-        mac.update(packet);
-        let expected = mac.finalize().into_bytes();
+        let expected = gate_mac(key, &timestamp_bytes, &key_id, packet);
         if !bool::from(expected.as_slice().ct_eq(provided_mac)) {
             return GateDecision::Drop;
         }
@@ -112,30 +145,101 @@ impl SilentFilter {
     }
 }
 
-fn gate_key(device_id: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Blake2s256::new();
-    blake2::digest::Update::update(&mut hasher, GATE_DOMAIN);
-    blake2::digest::Update::update(&mut hasher, device_id);
-    blake2::digest::FixedOutput::finalize_fixed(hasher).into()
+/// Costruisce il datagramma iniziale con prefisso autenticato per un peer.
+/// `secret` deve essere condiviso fuori banda tramite invito o relazione già
+/// autenticata; un DeviceId pubblico da solo non è sufficiente.
+pub fn gate_initial_datagram(
+    recipient_device_id: [u8; 32],
+    secret: &[u8],
+    timestamp: u64,
+    packet: &[u8],
+) -> Result<Vec<u8>, GateError> {
+    if packet.is_empty() || packet[0] & 0x80 == 0 {
+        return Err(GateError::NotInitialPacket);
+    }
+    let key = derive_gate_key(secret, &recipient_device_id)?;
+    let key_id = gate_key_id(&key);
+    let timestamp_bytes = timestamp.to_be_bytes();
+    let mac = gate_mac(&key, &timestamp_bytes, &key_id, packet);
+    let mut datagram = Vec::with_capacity(PREFIX_LEN + packet.len());
+    datagram.extend_from_slice(&timestamp_bytes);
+    datagram.extend_from_slice(&key_id);
+    datagram.extend_from_slice(&mac);
+    datagram.extend_from_slice(packet);
+    Ok(datagram)
 }
+
+fn derive_gate_key(
+    secret: &[u8],
+    recipient_device_id: &[u8; 32],
+) -> Result<Zeroizing<[u8; 32]>, GateError> {
+    if secret.len() < 16 {
+        return Err(GateError::SecretTooShort);
+    }
+    let hkdf = Hkdf::<Sha256>::new(Some(GATE_DOMAIN), secret);
+    let mut info = Vec::with_capacity(GATE_KEY_INFO.len() + recipient_device_id.len());
+    info.extend_from_slice(GATE_KEY_INFO);
+    info.extend_from_slice(recipient_device_id);
+    let mut key = Zeroizing::new([0u8; 32]);
+    hkdf.expand(&info, &mut *key)
+        .map_err(|_| GateError::KeyDerivation)?;
+    Ok(key)
+}
+
+fn gate_key_id(key: &[u8; 32]) -> [u8; KEY_ID_LEN] {
+    let mut hasher = Blake2s256::new();
+    blake2::digest::Update::update(&mut hasher, GATE_KEY_ID_DOMAIN);
+    blake2::digest::Update::update(&mut hasher, key);
+    let digest = blake2::digest::FixedOutput::finalize_fixed(hasher);
+    digest[..KEY_ID_LEN].try_into().expect("digest is 32 bytes")
+}
+
+fn gate_mac(
+    key: &[u8; 32],
+    timestamp: &[u8; 8],
+    key_id: &[u8; KEY_ID_LEN],
+    packet: &[u8],
+) -> [u8; TAG_LEN] {
+    let mut mac = GateMac::new_from_slice(key).expect("BLAKE2s accepts a 32-byte key");
+    mac.update(timestamp);
+    mac.update(key_id);
+    mac.update(packet);
+    mac.finalize().into_bytes().into()
+}
+
+/// Errori nella gestione delle credenziali del filtro silenzioso.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GateError {
+    /// Il segreto condiviso deve contenere almeno 128 bit.
+    SecretTooShort,
+    /// Impossibile derivare la chiave del filtro.
+    KeyDerivation,
+    /// Collisione rilevata tra due key ID diversi.
+    KeyIdCollision,
+    /// Il pacchetto non ha un header QUIC Initial a header lungo.
+    NotInitialPacket,
+}
+
+impl core::fmt::Display for GateError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::SecretTooShort => formatter.write_str("segreto gate troppo corto"),
+            Self::KeyDerivation => formatter.write_str("derivazione chiave gate fallita"),
+            Self::KeyIdCollision => formatter.write_str("collisione del key ID gate"),
+            Self::NotInitialPacket => formatter.write_str("il datagramma non è un QUIC Initial"),
+        }
+    }
+}
+
+impl std::error::Error for GateError {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn valid_datagram(device_id: &[u8; 32], timestamp: u64) -> Vec<u8> {
+    fn valid_datagram(device_id: &[u8; 32], secret: &[u8], timestamp: u64) -> Vec<u8> {
         let packet = [0xc0, 0, 0, 0, 1, 0];
-        let timestamp_bytes = timestamp.to_be_bytes();
-        let key = gate_key(device_id);
-        let mut mac = GateMac::new_from_slice(&key).unwrap();
-        mac.update(&timestamp_bytes);
-        mac.update(&packet);
-        let tag = mac.finalize().into_bytes();
-        let mut datagram = Vec::with_capacity(PREFIX_LEN + packet.len());
-        datagram.extend_from_slice(&timestamp_bytes);
-        datagram.extend_from_slice(&tag);
-        datagram.extend_from_slice(&packet);
-        datagram
+        gate_initial_datagram(*device_id, secret, timestamp, &packet).unwrap()
     }
 
     fn source(port: u16) -> SocketAddr {
@@ -145,8 +249,10 @@ mod tests {
     #[test]
     fn valid_initial_packet_passes_once_and_is_replay_protected_per_source() {
         let device_id = [0x34; 32];
+        let secret = [0xa5; 16];
         let mut filter = SilentFilter::new(device_id);
-        let datagram = valid_datagram(&device_id, 1_000);
+        filter.authorize_secret(&secret).unwrap();
+        let datagram = valid_datagram(&device_id, &secret, 1_000);
 
         assert_eq!(
             filter.inspect_initial(source(4000), &datagram, 1_030),
@@ -167,20 +273,22 @@ mod tests {
     #[test]
     fn invalid_mac_timestamp_and_short_datagrams_are_silently_dropped() {
         let device_id = [0x12; 32];
+        let secret = [0x12; 16];
         let mut filter = SilentFilter::new(device_id);
-        let mut datagram = valid_datagram(&device_id, 1_000);
+        filter.authorize_secret(&secret).unwrap();
+        let mut datagram = valid_datagram(&device_id, &secret, 1_000);
         datagram[10] ^= 1;
         assert_eq!(
             filter.inspect_initial(source(4000), &datagram, 1_000),
             GateDecision::Drop
         );
-        let datagram = valid_datagram(&device_id, 1_000);
+        let datagram = valid_datagram(&device_id, &secret, 1_000);
         assert_eq!(
             filter.inspect_initial(source(4000), &datagram, 1_121),
             GateDecision::Drop
         );
         assert_eq!(
-            filter.inspect_initial(source(4000), &[0; 24], 1_000),
+            filter.inspect_initial(source(4000), &[0; PREFIX_LEN], 1_000),
             GateDecision::Drop
         );
     }
@@ -188,8 +296,10 @@ mod tests {
     #[test]
     fn source_and_packet_are_bound_to_the_mac() {
         let device_id = [0x71; 32];
+        let secret = [0x71; 16];
         let mut filter = SilentFilter::new(device_id);
-        let mut datagram = valid_datagram(&device_id, 100);
+        filter.authorize_secret(&secret).unwrap();
+        let mut datagram = valid_datagram(&device_id, &secret, 100);
         let last = datagram.len() - 1;
         datagram[last] ^= 1;
         assert_eq!(
@@ -197,5 +307,53 @@ mod tests {
             GateDecision::Drop
         );
         assert_eq!(filter.tracked_sources(), 0);
+    }
+
+    #[test]
+    fn public_device_id_does_not_authorize_packets_and_credentials_are_revocable() {
+        let device_id = [0x55; 32];
+        let secret = [0x9a; 16];
+        let datagram = valid_datagram(&device_id, &secret, 500);
+        let mut filter = SilentFilter::new(device_id);
+        assert_eq!(
+            filter.inspect_initial(source(4400), &datagram, 500),
+            GateDecision::Drop
+        );
+
+        let key_id = filter.authorize_secret(&secret).unwrap();
+        assert_eq!(filter.authorized_credentials(), 1);
+        assert!(matches!(
+            filter.inspect_initial(source(4400), &datagram, 500),
+            GateDecision::PassInitial { .. }
+        ));
+        assert!(filter.revoke_key_id(&key_id));
+        assert_eq!(filter.authorized_credentials(), 0);
+        assert_eq!(
+            filter.inspect_initial(source(4401), &datagram, 500),
+            GateDecision::Drop
+        );
+    }
+
+    #[test]
+    fn gate_credential_is_bound_to_the_recipient_device() {
+        let first_recipient = [0x31; 32];
+        let other_recipient = [0x32; 32];
+        let secret = [0x41; 16];
+        let packet = [0xc0, 0, 0, 0, 1, 0];
+        let datagram = gate_initial_datagram(other_recipient, &secret, 700, &packet).unwrap();
+        let mut filter = SilentFilter::new(first_recipient);
+        filter.authorize_secret(&secret).unwrap();
+        assert_eq!(
+            filter.inspect_initial(source(4500), &datagram, 700),
+            GateDecision::Drop
+        );
+        assert_eq!(
+            gate_initial_datagram(first_recipient, &[1; 15], 700, &packet),
+            Err(GateError::SecretTooShort)
+        );
+        assert_eq!(
+            gate_initial_datagram(first_recipient, &secret, 700, &[0x40]),
+            Err(GateError::NotInitialPacket)
+        );
     }
 }
