@@ -1,9 +1,11 @@
 use std::io::{self, Write};
 use zeroize::Zeroizing;
 
+const MAX_PASSPHRASE_BYTES: usize = 4096;
+
 #[cfg(unix)]
 pub(super) fn read_hidden(prompt: &str) -> io::Result<Zeroizing<String>> {
-    use std::io::BufRead;
+    use std::io::{BufRead, Read};
     let fd = libc::STDIN_FILENO;
     // SAFETY: `termios` is a plain C struct initialized by `tcgetattr` before use.
     let mut original = unsafe { std::mem::zeroed::<libc::termios>() };
@@ -21,13 +23,21 @@ pub(super) fn read_hidden(prompt: &str) -> io::Result<Zeroizing<String>> {
     print!("{prompt}");
     io::stdout().flush()?;
     let mut passphrase = Zeroizing::new(String::new());
-    io::stdin().lock().read_line(&mut passphrase)?;
+    let stdin = io::stdin();
+    let mut input = stdin.lock().take((MAX_PASSPHRASE_BYTES + 2) as u64);
+    input.read_line(&mut passphrase)?;
     println!();
     if passphrase.ends_with('\n') {
         passphrase.pop();
         if passphrase.ends_with('\r') {
             passphrase.pop();
         }
+    }
+    if passphrase.len() > MAX_PASSPHRASE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "passphrase oltre il limite di 4096 byte",
+        ));
     }
     Ok(passphrase)
 }
@@ -72,10 +82,19 @@ pub(super) fn read_hidden(prompt: &str) -> io::Result<Zeroizing<String>> {
     print!("{prompt}");
     io::stdout().flush()?;
     let mut passphrase = Zeroizing::new(String::new());
-    io::stdin().read_line(&mut passphrase)?;
+    use std::io::{BufRead, Read};
+    let stdin = io::stdin();
+    let mut input = stdin.lock().take((MAX_PASSPHRASE_BYTES + 2) as u64);
+    input.read_line(&mut passphrase)?;
     println!();
     while passphrase.ends_with(['\n', '\r']) {
         passphrase.pop();
+    }
+    if passphrase.len() > MAX_PASSPHRASE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "passphrase oltre il limite di 4096 byte",
+        ));
     }
     Ok(passphrase)
 }
