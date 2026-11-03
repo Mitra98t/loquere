@@ -9,7 +9,7 @@ use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use ed25519_dalek::{Signature as DalekSignature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Chiave pubblica Ed25519, serializzata nella forma canonica di 32 byte.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,8 +62,10 @@ impl SecretKey {
     }
 
     /// Importa una chiave privata da 32 byte.
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(SigningKey::from_bytes(&bytes))
+    pub fn from_bytes(mut bytes: [u8; 32]) -> Self {
+        let key = SigningKey::from_bytes(&bytes);
+        bytes.zeroize();
+        Self(key)
     }
 
     /// Restituisce la chiave pubblica corrispondente.
