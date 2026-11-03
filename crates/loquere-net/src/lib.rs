@@ -37,6 +37,8 @@ pub enum UdpSocketError {
     UnsupportedMetadata(&'static str),
     /// Iniziale non prefissato o credenziale non corrispondente.
     Gate(GateError),
+    /// Un QUIC Initial deve essere inviato con [`UdpSocketAdapter::send_gate_initial`].
+    InitialRequiresGate,
     /// Datagramma più grande del massimo payload UDP IP consentito.
     DatagramTooLarge,
 }
@@ -69,7 +71,7 @@ impl UdpSocketAdapter {
     pub fn send(&self, transmit: &QuicTransmit) -> Result<usize, UdpSocketError> {
         self.validate_transmit(transmit)?;
         if is_quic_initial_packet(&transmit.payload) {
-            return Err(UdpSocketError::Gate(GateError::NotInitialPacket));
+            return Err(UdpSocketError::InitialRequiresGate);
         }
         self.socket
             .send_to(&transmit.payload, transmit.destination)
@@ -137,6 +139,9 @@ impl std::fmt::Display for UdpSocketError {
                 write!(formatter, "metadato UDP non supportato: {metadata}")
             }
             Self::Gate(error) => write!(formatter, "filtro gate: {error}"),
+            Self::InitialRequiresGate => {
+                formatter.write_str("un QUIC Initial richiede il prefisso gate autenticato")
+            }
             Self::DatagramTooLarge => formatter.write_str("datagramma UDP troppo grande"),
         }
     }
@@ -383,7 +388,7 @@ mod tests {
         };
         assert!(matches!(
             sender.send(&transmit),
-            Err(UdpSocketError::Gate(GateError::NotInitialPacket))
+            Err(UdpSocketError::InitialRequiresGate)
         ));
         assert_eq!(
             sender
