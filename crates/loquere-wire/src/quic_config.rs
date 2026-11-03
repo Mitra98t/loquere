@@ -3,11 +3,14 @@ use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use hkdf::Hkdf;
 use loquere_crypto::{PublicKey, SecretKey};
+use quinn_proto::TransportConfig;
 use quinn_proto::crypto::{AeadKey as QuinnAeadKey, HandshakeTokenKey};
 use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
 use std::sync::Arc;
 use zeroize::Zeroizing;
+
+const DATAGRAM_BUFFER_BYTES: usize = 1024 * 1024;
 
 /// Crea config QUIC client sans-IO con TLS 1.3, mTLS Ed25519 raw keys,
 /// ALPN `loquere/1` e 0-RTT disabilitato.
@@ -18,7 +21,13 @@ pub fn build_quic_client_config(
     let tls = build_client_tls_config(local_key, expected_peer)?;
     let crypto = quinn_proto::crypto::rustls::QuicClientConfig::try_from(tls)
         .map_err(|_| QuicConfigError::CryptoConfiguration)?;
-    Ok(quinn_proto::ClientConfig::new(Arc::new(crypto)))
+    let mut config = quinn_proto::ClientConfig::new(Arc::new(crypto));
+    let mut transport = TransportConfig::default();
+    transport
+        .datagram_receive_buffer_size(Some(DATAGRAM_BUFFER_BYTES))
+        .datagram_send_buffer_size(DATAGRAM_BUFFER_BYTES);
+    config.transport_config(Arc::new(transport));
+    Ok(config)
 }
 
 /// Crea config QUIC server sans-IO. L'orologio per i token è iniettato dal
@@ -33,6 +42,11 @@ pub fn build_quic_server_config(
         .map_err(|_| QuicConfigError::CryptoConfiguration)?;
     let mut config =
         quinn_proto::ServerConfig::new(Arc::new(crypto), Arc::new(TokenKey::generate()));
+    let mut transport = TransportConfig::default();
+    transport
+        .datagram_receive_buffer_size(Some(DATAGRAM_BUFFER_BYTES))
+        .datagram_send_buffer_size(DATAGRAM_BUFFER_BYTES);
+    config.transport = Arc::new(transport);
     config.time_source(time_source);
     Ok(config)
 }

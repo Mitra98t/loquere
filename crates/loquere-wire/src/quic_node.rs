@@ -1,6 +1,6 @@
 use blake2::Blake2sMac;
 use blake2::digest::{Mac, consts::U8, consts::U16};
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use quinn_proto::crypto::HmacKey;
 use quinn_proto::{
     ClientConfig, Connection, ConnectionHandle, ConnectionId, ConnectionIdGenerator, DatagramEvent,
@@ -87,6 +87,15 @@ pub enum QuicStreamError {
     Readable(quinn_proto::ReadableError),
     /// Errore durante l'estrazione dei dati.
     Read(quinn_proto::ReadError),
+}
+
+/// Errori dell'invio e della ricezione di datagrammi applicativi QUIC.
+#[derive(Debug)]
+pub enum QuicDatagramError {
+    /// La connessione non esiste più.
+    UnknownConnection,
+    /// Quinn non può accodare il datagramma.
+    Send(quinn_proto::SendDatagramError),
 }
 
 const MAX_STREAM_READ_BYTES: usize = 64 * 1024;
@@ -316,6 +325,40 @@ impl QuicNode {
         let mut output = QuicOutput::default();
         self.pump(now, &mut output);
         Ok((QuicStreamRead { bytes, finished }, output))
+    }
+
+    /// Accoda un datagramma applicativo non affidabile. Con `drop_oldest` i
+    /// datagrammi pendenti più vecchi possono essere scartati per fare spazio.
+    /// Chiamare [`Self::poll`] per produrre i pacchetti UDP.
+    pub fn send_datagram(
+        &mut self,
+        handle: ConnectionHandle,
+        bytes: &[u8],
+        drop_oldest: bool,
+    ) -> Result<(), QuicDatagramError> {
+        let connection = self
+            .connections
+            .get_mut(&handle)
+            .ok_or(QuicDatagramError::UnknownConnection)?;
+        connection
+            .datagrams()
+            .send(Bytes::copy_from_slice(bytes), drop_oldest)
+            .map_err(QuicDatagramError::Send)
+    }
+
+    /// Estrae un datagramma applicativo ricevuto, se disponibile.
+    pub fn receive_datagram(
+        &mut self,
+        handle: ConnectionHandle,
+    ) -> Result<Option<Vec<u8>>, QuicDatagramError> {
+        let connection = self
+            .connections
+            .get_mut(&handle)
+            .ok_or(QuicDatagramError::UnknownConnection)?;
+        Ok(connection
+            .datagrams()
+            .recv()
+            .map(|datagram| datagram.to_vec()))
     }
 
     fn pump(&mut self, now: Instant, output: &mut QuicOutput) {
@@ -564,6 +607,23 @@ mod tests {
             .unwrap();
         assert_eq!(read.bytes, b"hello from loquere");
         assert!(read.finished);
+
+        client
+            .send_datagram(client_handle, b"unreliable media", true)
+            .unwrap();
+        for datagram in client.poll(now + Duration::from_millis(1)).datagrams {
+            let _ = server.receive(
+                now + Duration::from_millis(1),
+                client_addr,
+                None,
+                None,
+                &datagram.payload,
+            );
+        }
+        assert_eq!(
+            server.receive_datagram(server_handle).unwrap().unwrap(),
+            b"unreliable media"
+        );
     }
 
     fn enqueue_output(
