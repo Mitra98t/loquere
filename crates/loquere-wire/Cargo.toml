@@ -8,6 +8,9 @@ rust-version.workspace = true
 
 [dependencies]
 blake2.workspace = true
+loquere-crypto = { path = "../loquere-crypto" }
+quinn-proto.workspace = true
+rustls.workspace = true
 subtle.workspace = true
 
 [lints.rust]
