@@ -957,6 +957,8 @@ Loquere/
 
 **D-25. Framing del log locale.** Ogni record è `lunghezza (u32 little-endian) ‖ SealedBox-v1`; massimo 16 MiB ciphertext per record. I dati associati AEAD sono `loquere:store-record:v1\0 ‖ seq(u64 little-endian)`, dove `seq` è l'ordine del record dal valore zero. All'avvio una coda con header/ciphertext incompleto viene troncata all'ultimo record valido; lunghezze impossibili e tag non validi sono errori, non vengono scartati come se fossero crash.
 
+**D-26. Prefisso del filtro silenzioso.** Il timestamp sul filo è u64 big-endian; MAC BLAKE2s keyed a 16 byte su `timestamp ‖ pacchetto QUIC`, con chiave derivata `BLAKE2s("loquere-gate" ‖ device_id)`. Il MAC si confronta in tempo costante. Il filtro conserva per sorgente le coppie timestamp/MAC già viste entro la finestra di 120 s; i limiti sono 1024 sorgenti e 4096 pacchetti validi per sorgente.
+
 ---
 
 ## 17. Sicurezza e privacy
@@ -1097,6 +1099,7 @@ Stesso codice, senza interfaccia: ideale su un Raspberry Pi o un piccolo VPS. Pu
 | Firme | `ed25519-dalek` | identità | ✅ |
 | AEAD | `chacha20poly1305` | sessioni, frame media, archiviazione | ✅ |
 | Hash / KDF | `blake3`, `blake2`, `hkdf` | id messaggi e file (BLAKE3); filtro silenzioso (BLAKE2s); derivazioni | ✅ (blake3 ha SIMD opzionale) |
+| Confronto tag | `subtle` | confronto in tempo costante dei tag MAC | ✅ |
 | Password | `argon2` | protezione chiavi su disco | ✅ |
 | Trasporto | `quinn-proto` | QUIC sans-IO, senza runtime asincrono (D-04) | ✅ |
 | TLS | `rustls` con provider `ring`, chiavi pubbliche grezze (RFC 7250) | handshake e cifratura del trasporto (D-05) | Rust + assembly (`ring`) |
@@ -1220,6 +1223,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Protezione account con passphrase | MK casuale avvolta da Argon2id in un envelope esterno versionato | §6.1 (D-23) |
 | Payload invito verificabile | include `DeviceCert` completo; firma DK domain-separated e Base32 RFC 4648 | §7.1 (D-24) |
 | Framing append-only locale | lunghezza u32 LE + envelope AEAD; sequenza autenticata; limite 16 MiB | §16 (D-25) |
+| Prefisso filtro silenzioso | timestamp BE, BLAKE2s-MAC a 16 byte, anti-replay per sorgente | §8.3 (D-26) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

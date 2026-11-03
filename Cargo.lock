@@ -259,6 +259,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "loquere-wire"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "subtle",
+]
+
+[[package]]
 name = "opaque-debug"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
