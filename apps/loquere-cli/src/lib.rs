@@ -2,7 +2,7 @@
 
 mod terminal;
 
-use loquere_identity::{Account, DeviceRole, IdentityError, Invitation};
+use loquere_identity::{Account, DeviceRole, IdentityError, Invitation, InviteOptions};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::net::IpAddr;
@@ -146,6 +146,30 @@ pub fn inspect_identity_file(
     })
 }
 
+/// Crea un invito firmato dall'identità locale, senza contattare il destinatario.
+pub fn create_invite_from_file(
+    path: impl AsRef<Path>,
+    passphrase: &str,
+    display_name: String,
+    expires_at: u32,
+) -> Result<String, IdentityFileError> {
+    let encoded = fs::read(path).map_err(IdentityFileError::Io)?;
+    let account = Account::unprotect_with_passphrase(&encoded, passphrase)
+        .map_err(IdentityFileError::Identity)?;
+    let invite = account
+        .create_invite(
+            display_name,
+            expires_at,
+            InviteOptions {
+                single_use: true,
+                auto_accept: false,
+            },
+            Vec::new(),
+        )
+        .map_err(IdentityFileError::Identity)?;
+    invite.to_uri().map_err(IdentityFileError::Identity)
+}
+
 fn encode_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut encoded = String::with_capacity(bytes.len() * 2);
@@ -277,5 +301,32 @@ mod tests {
         assert_eq!(summary.device_name, "Portatile");
         assert!(inspect_identity_file(&path, "wrong passphrase").is_err());
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn invite_creation_from_file_is_signed_and_defaults_to_manual_single_use() {
+        let account = Account::create("PC Alice".to_owned(), 1).unwrap();
+        let protected = account
+            .protect_with_passphrase("a strong passphrase")
+            .unwrap();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "loquere-cli-invite-test-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::write(&path, protected).unwrap();
+
+        let code =
+            create_invite_from_file(&path, "a strong passphrase", "Alice".to_owned(), 99).unwrap();
+        let invite = Invitation::parse_code(&code).unwrap();
+        assert_eq!(invite.account_id(), account.account_id());
+        assert_eq!(invite.display_name(), "Alice");
+        assert!(invite.options().single_use);
+        assert!(!invite.options().auto_accept);
+        assert!(invite.candidates().is_empty());
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -1052,7 +1052,7 @@ loquere-cli device link                       # su un nuovo dispositivo: mostra 
 loquere-cli device approve "TCL-…"            # su un dispositivo Admin: approva, mostra il codice di verifica
 loquere-cli device list
 loquere-cli device revoke "MacBook vecchio"
-loquere-cli invite create --single-use --expires 7d
+loquere-cli invite create --file identity.loq --name "Alice" --expires-in 7d # monouso, accettazione manuale
 loquere-cli invite inspect "loquere://invite/…" # verifica firma e mostra i dati pubblici
 loquere-cli friend add "loquere://invite/…"
 loquere-cli friend list

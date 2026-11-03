@@ -56,6 +56,41 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             println!("Account creato: {account_id}");
             Ok(())
         }
+        (Some("invite"), Some("create")) => {
+            let mut file = None;
+            let mut name = None;
+            let mut expires_in = None;
+            while let Some(option) = args.next() {
+                let value = args
+                    .next()
+                    .ok_or_else(|| format!("valore mancante per {option}\n{}", usage()))?;
+                let slot = match option.as_str() {
+                    "--file" => &mut file,
+                    "--name" => &mut name,
+                    "--expires-in" => &mut expires_in,
+                    _ => return Err(usage()),
+                };
+                if slot.replace(value).is_some() {
+                    return Err(format!("opzione duplicata: {option}"));
+                }
+            }
+            let file = file.ok_or_else(usage)?;
+            let name = name.ok_or_else(usage)?;
+            let duration = parse_duration(expires_in.as_deref().unwrap_or("7d"))?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| format!("orologio di sistema non valido: {error}"))?
+                .as_secs();
+            let expires_at = now
+                .checked_add(duration)
+                .and_then(|timestamp| u32::try_from(timestamp).ok())
+                .ok_or_else(|| "scadenza oltre il limite rappresentabile".to_owned())?;
+            let passphrase = loquere_cli::prompt_passphrase().map_err(|error| error.to_string())?;
+            let code = loquere_cli::create_invite_from_file(file, &passphrase, name, expires_at)
+                .map_err(|error| error.to_string())?;
+            println!("{code}");
+            Ok(())
+        }
         (Some("invite"), Some("inspect")) => {
             let code = args.next().ok_or_else(usage)?;
             if args.next().is_some() {
@@ -75,7 +110,28 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "uso: loquere-cli id new --name <nome-dispositivo> --output <file>\n     loquere-cli id show --file <file>\n     loquere-cli invite inspect <URI-o-codice-invito>\n     loquere-cli --help".to_owned()
+    "uso: loquere-cli id new --name <nome-dispositivo> --output <file>\n     loquere-cli id show --file <file>\n     loquere-cli invite create --file <file> --name <nome> [--expires-in 7d]\n     loquere-cli invite inspect <URI-o-codice-invito>\n     loquere-cli --help".to_owned()
+}
+
+fn parse_duration(value: &str) -> Result<u64, String> {
+    let split = value
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(value.len());
+    let amount: u64 = value[..split]
+        .parse()
+        .map_err(|_| format!("durata non valida: {value}"))?;
+    let multiplier = match &value[split..] {
+        "s" => 1,
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 24 * 60 * 60,
+        "w" => 7 * 24 * 60 * 60,
+        _ => return Err(format!("unità durata non valida: {value}")),
+    };
+    amount
+        .checked_mul(multiplier)
+        .filter(|duration| *duration > 0)
+        .ok_or_else(|| format!("durata fuori intervallo: {value}"))
 }
 
 #[cfg(test)]
@@ -96,5 +152,14 @@ mod tests {
             .into_iter())
             .is_err()
         );
+    }
+
+    #[test]
+    fn parses_expiration_duration_with_checked_units() {
+        assert_eq!(parse_duration("7d"), Ok(604_800));
+        assert_eq!(parse_duration("12h"), Ok(43_200));
+        assert!(parse_duration("0s").is_err());
+        assert!(parse_duration("999999999999999999999w").is_err());
+        assert!(parse_duration("5months").is_err());
     }
 }
