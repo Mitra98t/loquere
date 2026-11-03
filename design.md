@@ -306,15 +306,17 @@ Payload binario (versione 1):
 | `version` | 1 B | `1` |
 | `account_id` | 32 B | `IK` pubblica |
 | `device_id` | 32 B | `DK` del dispositivo che ha creato l'invito; serve per il filtro e per l'handshake TLS |
-| `cert_sig` | 64 B | firma `IK` del `DeviceCert` (lega dispositivo e account) |
+| `cert_len` + `certificate` | 2 B + cert | lunghezza u16 little-endian e `DeviceCert` completo firmato da `IK` |
 | `invite_token` | 16 B | casuale; autorizza il primo contatto |
 | `expires_at` | 4 B | secondi Unix; 0 = mai |
-| `flags` | 1 B | monouso / multiuso / auto-accetta |
-| `display_name` | ≤ 32 B | solo suggerimento, il profilo firmato fa fede |
-| `candidates` | 0–4 × (1+16+2) B | indirizzi IPv6/IPv4 + porta noti al momento della creazione |
-| `signature` | 64 B | `DK` firma tutto quanto sopra |
+| `flags` | 1 B | bit 0 monouso, bit 1 auto-accetta; gli altri riservati a zero |
+| `display_len` + `display_name` | 1 B + ≤32 B | lunghezza in byte e testo UTF-8, solo suggerimento |
+| `candidate_count` + `candidates` | 1 B + 0–4 × 19 B | famiglia 4/6, indirizzo di 16 B, porta u16 big-endian; IPv4 nei primi 4 byte e poi 12 zero |
+| `signature` | 64 B | `DK` firma i campi precedenti con dominio `loquere:invite:v1\0` |
 
 Lunghezza tipica: ~320 byte → ~510 caratteri base32. Sufficiente per un QR di densità media.
+
+**D-24. Invito verificabile.** Il payload include il `DeviceCert` completo, non solo la sua firma: così chi riceve può verificare la catena `IK` → `DK` prima di fidarsi dell'invito. Il certificato è preceduto da `cert_len` u16 little-endian. Tutte le lunghezze sono in byte; i candidati IPv4 usano 12 byte finali a zero. La firma DK copre i byte canonici dal campo `version` all'ultimo candidato, preceduti dal dominio ASCII `loquere:invite:v1\0`. Codifica Base32 RFC 4648 maiuscola senza padding.
 
 **D-03.** Il token di invito è obbligatorio: un nodo **non risponde** a un handshake da uno sconosciuto che non presenta un token valido (§8.3). Questo rende il nodo invisibile agli scanner di porte.
 
@@ -1214,6 +1216,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Parametri Argon2id | 64 MiB, 3 passaggi, parallelismo 1; versionati nell'envelope | §6.1 (D-21) |
 | Formato del payload `identity.tck` | payload binario versionato, autenticato con ChaCha20-Poly1305 | §16 (D-22) |
 | Protezione account con passphrase | MK casuale avvolta da Argon2id in un envelope esterno versionato | §6.1 (D-23) |
+| Payload invito verificabile | include `DeviceCert` completo; firma DK domain-separated e Base32 RFC 4648 | §7.1 (D-24) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 
