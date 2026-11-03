@@ -961,6 +961,10 @@ Loquere/
 
 **D-27. Simulatore deterministico.** `loquere-sim` usa un generatore SplitMix64 con seed esplicito (solo test, mai per segreti) e link diretti configurabili con latenza, jitter uniforme, perdita, banda e partizioni. Pacchetti consegnati sono ordinati per tempo e sequenza di invio; nessun socket o clock di sistema.
 
+**D-28. Token di Retry QUIC.** La chiave server casuale è mantenuta solo in memoria; per ogni contesto Quinn ricava una chiave con HKDF-SHA256 e label `loquere:quic-retry-token:v1`, poi cifra i token con ChaCha20-Poly1305 e nonce casuale. La sorgente temporale per la scadenza dei token è iniettata nella configurazione server.
+
+**D-29. Driver QUIC sans-IO.** `QuicNode` incapsula `quinn-proto::Endpoint` e le connessioni; riceve datagrammi già filtrati, tempo monotono e indirizzi dal chiamante, e restituisce datagrammi/eventi senza aprire socket o leggere clock di sistema. La scelta e la gestione dei socket UDP restano fuori da `loquere-wire`.
+
 ---
 
 ## 17. Sicurezza e privacy
@@ -1227,6 +1231,8 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Framing append-only locale | lunghezza u32 LE + envelope AEAD; sequenza autenticata; limite 16 MiB | §16 (D-25) |
 | Prefisso filtro silenzioso | timestamp BE, BLAKE2s-MAC a 16 byte, anti-replay per sorgente | §8.3 (D-26) |
 | Simulatore | SplitMix64 deterministico per seed, link con latenza/jitter/perdita/banda/partizioni | §22 (D-27) |
+| Token Retry QUIC | HKDF-SHA256 domain-separated + ChaCha20-Poly1305; tempo iniettato | §8.3 (D-28) |
+| Driver QUIC | `QuicNode` sans-IO sopra `quinn-proto`; ingressi/uscite espliciti, socket al chiamante | §8.3 (D-29) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 
