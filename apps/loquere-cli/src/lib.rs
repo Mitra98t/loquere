@@ -1,7 +1,13 @@
 //! Comandi CLI di Loquere e formattazione dei relativi risultati.
 
-use loquere_identity::Invitation;
+mod terminal;
+
+use loquere_identity::{Account, IdentityError, Invitation};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::net::IpAddr;
+use std::path::Path;
+use zeroize::Zeroizing;
 
 /// Dati pubblici di un invito dopo la verifica crittografica.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,6 +84,73 @@ pub fn format_invite(summary: &InviteSummary) -> String {
     )
 }
 
+/// Crea un account e salva la sua identità cifrata senza sovrascrivere file.
+pub fn create_identity_file(
+    path: impl AsRef<Path>,
+    device_name: String,
+    passphrase: &str,
+    created_at: u64,
+) -> Result<String, IdentityFileError> {
+    let account = Account::create(device_name, created_at).map_err(IdentityFileError::Identity)?;
+    let encrypted = account
+        .protect_with_passphrase(passphrase)
+        .map_err(IdentityFileError::Identity)?;
+    let path = path.as_ref();
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(IdentityFileError::Io)?;
+    if let Err(error) = file.write_all(&encrypted).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(IdentityFileError::Io(error));
+    }
+    Ok(account.account_id().to_base32())
+}
+
+/// Chiede e conferma una passphrase senza mostrarla sul terminale.
+pub fn prompt_passphrase() -> Result<Zeroizing<String>, IdentityFileError> {
+    let first = terminal::read_hidden("Passphrase: ").map_err(IdentityFileError::Io)?;
+    let second = terminal::read_hidden("Conferma passphrase: ").map_err(IdentityFileError::Io)?;
+    if first != second {
+        return Err(IdentityFileError::PassphraseMismatch);
+    }
+    if first.is_empty() {
+        return Err(IdentityFileError::EmptyPassphrase);
+    }
+    Ok(first)
+}
+
+/// Errori della creazione di un file d'identità.
+#[derive(Debug)]
+pub enum IdentityFileError {
+    /// Errore crittografico o di codifica dell'identità.
+    Identity(IdentityError),
+    /// Errore del filesystem o del terminale.
+    Io(std::io::Error),
+    /// Le due passphrase inserite non coincidono.
+    PassphraseMismatch,
+    /// La passphrase non può essere vuota.
+    EmptyPassphrase,
+}
+
+impl std::fmt::Display for IdentityFileError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Identity(error) => write!(formatter, "identità non valida: {error}"),
+            Self::Io(error) => write!(formatter, "errore I/O: {error}"),
+            Self::PassphraseMismatch => formatter.write_str("le passphrase non coincidono"),
+            Self::EmptyPassphrase => formatter.write_str("la passphrase non può essere vuota"),
+        }
+    }
+}
+
+impl std::error::Error for IdentityFileError {}
+
 fn yes_no(value: bool) -> &'static str {
     if value { "sì" } else { "no" }
 }
@@ -116,5 +189,34 @@ mod tests {
     #[test]
     fn invite_inspection_rejects_malformed_or_tampered_codes() {
         assert!(inspect_invite("loquere://invite/nope").is_err());
+    }
+
+    #[test]
+    fn identity_file_is_encrypted_private_and_never_overwritten() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "loquere-cli-identity-test-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("identity.loq");
+        let account_id =
+            create_identity_file(&path, "Portatile".to_owned(), "a strong passphrase", 1).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(!bytes.windows(8).any(|window| window == b"LOQID\x01\0\0"));
+        assert!(create_identity_file(&path, "Altro".to_owned(), "password", 2).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert_eq!(account_id.len(), 52);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }
