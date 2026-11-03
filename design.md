@@ -248,6 +248,8 @@ Profile {
 
 **D-22. File identità locale.** Il plaintext cifrato di `identity.tck` ha magic/versione `LOQID\x01\0\0`, poi chiave privata account (32 B), chiave privata dispositivo (32 B), segreto `D` (32 B), lunghezza del `DeviceCert` (u32 little-endian) e certificato. L'intero payload è cifrato con ChaCha20-Poly1305 usando `loquere:identity:v1` come dati associati. In apertura si verifica il certificato e che le due chiavi private corrispondano a identità e dispositivo certificati.
 
+**D-23. Protezione passphrase di `identity.tck`.** Si genera una MK casuale di 32 byte; il payload identità è cifrato con MK. L'envelope esterno contiene `LOQPRT\x01\0`, lunghezza u32 little-endian dell'envelope MK, lunghezza u32 dell'identità cifrata, envelope MK e identità cifrata. La MK è avvolta con Argon2id/ChaCha20-Poly1305 usando `loquere:master-key:v1` come dati associati.
+
 ```
 DeviceCert {
   account_id,
@@ -1211,6 +1213,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Encoding di `DeviceCert` | binario canonico versionato e separato per dominio, senza crate di serializzazione | §6.4 (D-20) |
 | Parametri Argon2id | 64 MiB, 3 passaggi, parallelismo 1; versionati nell'envelope | §6.1 (D-21) |
 | Formato del payload `identity.tck` | payload binario versionato, autenticato con ChaCha20-Poly1305 | §16 (D-22) |
+| Protezione account con passphrase | MK casuale avvolta da Argon2id in un envelope esterno versionato | §6.1 (D-23) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 
