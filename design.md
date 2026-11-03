@@ -973,7 +973,7 @@ Loquere/
 
 **D-33. Demultiplexing UDP pre-QUIC.** `loquere-net` rimuove il prefisso solo quando il payload dopo i 40 byte è un QUIC v1 Initial; gli Initial scaduti o con MAC non valido vengono comunque inviati al controllo gate e scartati, senza euristiche sull'orario per riconoscere il prefisso. Gli altri pacchetti passano solo se il destination CID è un CID locale autenticato. Nessun socket o invio è implementato da questo filtro.
 
-**D-34. Adapter UDP portabile iniziale.** `UdpSocketAdapter` usa `std::net::UdpSocket` bloccante, buffer ricezione del chiamante e timeout configurabile nel thread `net`. Invia solo metadati rappresentabili dall'API standard; ECN, GSO o override IP sorgente non applicabile sono errori espliciti, mai ignorati. Un backend OS-specifico potrà aggiungere queste ottimizzazioni senza cambiare il filtro sans-IO.
+**D-34. Adapter UDP portabile iniziale.** `UdpSocketAdapter` usa `std::net::UdpSocket` bloccante, buffer ricezione del chiamante e timeout configurabile nel thread `net`. Initial QUIC non possono essere inviati senza prefisso: `send_gate_initial` verifica il key ID e applica il MAC; gli altri pacchetti usano `send`. ECN, GSO o override IP sorgente non applicabile sono errori espliciti, mai ignorati. Un backend OS-specifico potrà aggiungere queste ottimizzazioni senza cambiare il filtro sans-IO.
 
 ---
 

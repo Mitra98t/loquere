@@ -2,8 +2,10 @@
 
 //! Filtro dei datagrammi UDP prima del driver QUIC.
 
-use loquere_wire::QuicTransmit;
-use loquere_wire::{GateDecision, GateError, QuicNode, SilentFilter};
+use loquere_wire::{
+    GateDecision, GateError, QuicNode, QuicTransmit, SilentFilter, gate_initial_datagram,
+    gate_key_id_for, is_quic_initial_packet,
+};
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
@@ -33,6 +35,8 @@ pub enum UdpSocketError {
     Io(io::Error),
     /// L'operazione richiede un backend OS non ancora implementato.
     UnsupportedMetadata(&'static str),
+    /// Iniziale non prefissato o credenziale non corrispondente.
+    Gate(GateError),
     /// Datagramma più grande del massimo payload UDP IP consentito.
     DatagramTooLarge,
 }
@@ -63,6 +67,47 @@ impl UdpSocketAdapter {
     /// Invia un `Transmit` Quinn se i suoi metadati sono rappresentabili
     /// dall'API UDP portabile. Non modifica il payload QUIC.
     pub fn send(&self, transmit: &QuicTransmit) -> Result<usize, UdpSocketError> {
+        self.validate_transmit(transmit)?;
+        if is_quic_initial_packet(&transmit.payload) {
+            return Err(UdpSocketError::Gate(GateError::NotInitialPacket));
+        }
+        self.socket
+            .send_to(&transmit.payload, transmit.destination)
+            .map_err(UdpSocketError::Io)
+    }
+
+    /// Prefissa e invia un QUIC v1 Initial con la credenziale associata alla
+    /// trasmissione. Il timestamp Unix è fornito dal chiamante.
+    pub fn send_gate_initial(
+        &self,
+        transmit: &QuicTransmit,
+        recipient_device_id: [u8; 32],
+        secret: &[u8],
+        timestamp_unix_seconds: u64,
+    ) -> Result<usize, UdpSocketError> {
+        self.validate_transmit(transmit)?;
+        if !is_quic_initial_packet(&transmit.payload) {
+            return Err(UdpSocketError::Gate(GateError::NotInitialPacket));
+        }
+        let key_id = gate_key_id_for(recipient_device_id, secret).map_err(UdpSocketError::Gate)?;
+        if transmit.gate_key_id != Some(key_id) {
+            return Err(UdpSocketError::UnsupportedMetadata(
+                "gate key ID non corrisponde al segreto del peer",
+            ));
+        }
+        let datagram = gate_initial_datagram(
+            recipient_device_id,
+            secret,
+            timestamp_unix_seconds,
+            &transmit.payload,
+        )
+        .map_err(UdpSocketError::Gate)?;
+        self.socket
+            .send_to(&datagram, transmit.destination)
+            .map_err(UdpSocketError::Io)
+    }
+
+    fn validate_transmit(&self, transmit: &QuicTransmit) -> Result<(), UdpSocketError> {
         if transmit.payload.len() > 65_507 {
             return Err(UdpSocketError::DatagramTooLarge);
         }
@@ -80,9 +125,7 @@ impl UdpSocketAdapter {
                 ));
             }
         }
-        self.socket
-            .send_to(&transmit.payload, transmit.destination)
-            .map_err(UdpSocketError::Io)
+        Ok(())
     }
 }
 
@@ -93,6 +136,7 @@ impl std::fmt::Display for UdpSocketError {
             Self::UnsupportedMetadata(metadata) => {
                 write!(formatter, "metadato UDP non supportato: {metadata}")
             }
+            Self::Gate(error) => write!(formatter, "filtro gate: {error}"),
             Self::DatagramTooLarge => formatter.write_str("datagramma UDP troppo grande"),
         }
     }
@@ -318,5 +362,48 @@ mod tests {
             socket.send(&transmit),
             Err(UdpSocketError::UnsupportedMetadata("UDP GSO"))
         ));
+    }
+
+    #[test]
+    fn udp_adapter_requires_and_applies_gate_prefix_for_initial() {
+        let loopback = SocketAddr::from(([127, 0, 0, 1], 0));
+        let sender = UdpSocketAdapter::bind(loopback, Duration::from_secs(1)).unwrap();
+        let receiver = UdpSocketAdapter::bind(loopback, Duration::from_secs(1)).unwrap();
+        let device_id = [0x36; 32];
+        let secret = [0x92; 16];
+        let payload = vec![0xc0, 0, 0, 0, 1, 0];
+        let transmit = QuicTransmit {
+            destination: receiver.local_addr().unwrap(),
+            source_ip: None,
+            ecn: None,
+            segment_size: None,
+            connection: None,
+            gate_key_id: Some(gate_key_id_for(device_id, &secret).unwrap()),
+            payload: payload.clone(),
+        };
+        assert!(matches!(
+            sender.send(&transmit),
+            Err(UdpSocketError::Gate(GateError::NotInitialPacket))
+        ));
+        assert_eq!(
+            sender
+                .send_gate_initial(&transmit, device_id, &secret, 5000)
+                .unwrap(),
+            payload.len() + 40
+        );
+        let mut buffer = [0u8; 128];
+        let received = receiver.receive(&mut buffer).unwrap();
+        assert_eq!(received.length, payload.len() + 40);
+        let mut ingress = UdpIngressFilter::new(device_id);
+        ingress.authorize_secret(&secret).unwrap();
+        let accepted = ingress
+            .inspect(
+                &QuicNode::client([0x11; 32]),
+                received.source,
+                &buffer[..received.length],
+                5000,
+            )
+            .unwrap();
+        assert_eq!(accepted.packet, payload);
     }
 }
