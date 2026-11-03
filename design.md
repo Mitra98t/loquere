@@ -484,13 +484,13 @@ Per essere contattato, un nodo deve avere un socket UDP in ascolto raggiungibile
 | Passo | Costo per il nodo | Chi lo supera |
 |---|---|---|
 | 1. lunghezza e forma dell'header | confronti | chiunque |
-| 2. limite di frequenza per indirizzo sorgente | tabella a dimensione fissa | chiunque non stia inondando |
+| 2. quota anti-replay limitata per indirizzo sorgente | tabella bounded: max 1024 sorgenti, 4096 nonce per sorgente | credenziali gate valide |
 | 3a. header corto: Connection ID con MAC valido | un hash | solo chi ha una connessione aperta |
-| 3b. pacchetto iniziale: prefisso con MAC valido e timestamp nuovo | un hash | solo chi conosce la chiave del dispositivo: amici, propri dispositivi, invitati, partecipanti della chiamata |
+| 3b. pacchetto iniziale: key ID noto, MAC con segreto condiviso valido e timestamp nuovo | lookup + un hash | solo chi conosce la credenziale della relazione (token invito o segreto peer) |
 | 4. `quinn-proto` e handshake TLS 1.3 (`rustls`) | due DH, parsing TLS | come sopra |
 | 5. chiave del peer accettata dal verificatore e primo messaggio autorizzato (amico, dispositivo dell'account, token o biglietto valido, non revocato) | ricerca locale | solo chi è autorizzato |
 
-I passi 1–3 sono il **filtro**, l'unico codice raggiungibile da un estraneo: obiettivo ~200 righe, nessuna allocazione dipendente dall'input, fuzzing continuo in CI, prima area da sottoporre alla revisione esterna. Un test di proprietà verifica che, per qualunque input che non supera i controlli, la macchina a stati non produca **alcuna** azione di invio.
+I passi 1–3 sono il **filtro**, l'unico codice raggiungibile da un estraneo: obiettivo ~200 righe, nessuna allocazione o stato dipendente dall'input prima della verifica MAC, fuzzing continuo in CI, prima area da sottoporre alla revisione esterna. Dopo un MAC valido lo stato anti-replay resta bounded. Un test di proprietà verifica che, per qualunque input che non supera i controlli, la macchina a stati non produca **alcuna** azione di invio.
 
 **Rischi che restano, e quanto pesano:**
 
