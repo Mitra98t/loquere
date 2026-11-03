@@ -244,6 +244,8 @@ Profile {
 
 **D-20. Encoding di `DeviceCert`.** La firma copre una codifica binaria canonica, senza dipendenze di serializzazione: il dominio ASCII `loquere:device-cert:v1\0`, seguito nell'ordine da `account_id` (32 byte), `device_id` (32 byte), `role` (1 byte: `0` Admin, `1` Member), `created_at` (u64 little-endian, secondi Unix), lunghezza del nome (u16 little-endian) e nome UTF-8. La lunghezza è in byte e deve essere compresa tra 1 e 65535. Il prefisso di dominio separa queste firme da ogni altro uso della stessa chiave.
 
+**D-21. Parametri passphrase.** L'envelope cifrato con passphrase usa Argon2id v1.3 con memoria 64 MiB, 3 passaggi, parallelismo 1 e output di 32 byte; salt casuale di 16 byte. I parametri sono fissi per la versione 1 dell'envelope, così l'apertura non dipende da valori forniti dal file. Il payload è poi cifrato con ChaCha20-Poly1305 e nonce casuale di 12 byte. Modifiche ai parametri richiedono una nuova versione dell'envelope.
+
 ```
 DeviceCert {
   account_id,
@@ -1205,6 +1207,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Limiti di gruppo | **16 audio / 8 video** | §2.1 |
 | Nomi di crate e binari | **tutto minuscolo** (`loquere-wire`, `loquere-cli`, schema `loquere://`); "Loquere" solo come nome del prodotto e della cartella dati | §5.2 |
 | Encoding di `DeviceCert` | binario canonico versionato e separato per dominio, senza crate di serializzazione | §6.4 (D-20) |
+| Parametri Argon2id | 64 MiB, 3 passaggi, parallelismo 1; versionati nell'envelope | §6.1 (D-21) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

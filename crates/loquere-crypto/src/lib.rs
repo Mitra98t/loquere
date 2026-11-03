@@ -5,10 +5,11 @@
 //! Questa crate espone firme Ed25519 tramite `ed25519-dalek`; non implementa
 //! primitive crittografiche proprie.
 
+use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use ed25519_dalek::{Signature as DalekSignature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand_core::OsRng;
+use rand_core::{OsRng, RngCore};
 use zeroize::{Zeroize, Zeroizing};
 
 /// Chiave pubblica Ed25519, serializzata nella forma canonica di 32 byte.
@@ -153,6 +154,80 @@ impl SealedBox {
     }
 }
 
+/// Envelope autenticato con chiave derivata da passphrase tramite Argon2id.
+/// Parametri fissi per versione: 64 MiB, 3 passaggi, parallelismo 1.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PassphraseEnvelope {
+    salt: [u8; 16],
+    sealed: SealedBox,
+}
+
+impl PassphraseEnvelope {
+    /// Cifra con passphrase UTF-8; i dati associati legano il ciphertext al contesto.
+    pub fn seal(
+        passphrase: &str,
+        plaintext: &[u8],
+        associated_data: &[u8],
+    ) -> Result<Self, CryptoError> {
+        if passphrase.is_empty() {
+            return Err(CryptoError::EmptyPassphrase);
+        }
+        let mut salt = [0u8; 16];
+        OsRng.fill_bytes(&mut salt);
+        let key = derive_passphrase_key(passphrase, &salt)?;
+        let sealed = SealedBox::seal(&key, plaintext, associated_data)?;
+        Ok(Self { salt, sealed })
+    }
+
+    /// Decifra e autentica; passphrase errata e dati alterati danno lo stesso errore.
+    pub fn open(
+        &self,
+        passphrase: &str,
+        associated_data: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+        if passphrase.is_empty() {
+            return Err(CryptoError::AuthenticationFailed);
+        }
+        let key = derive_passphrase_key(passphrase, &self.salt)?;
+        self.sealed.open(&key, associated_data)
+    }
+
+    /// Codifica versione, salt casuale e busta AEAD.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let sealed = self.sealed.to_bytes();
+        let mut bytes = Vec::with_capacity(1 + self.salt.len() + sealed.len());
+        bytes.push(1);
+        bytes.extend_from_slice(&self.salt);
+        bytes.extend_from_slice(&sealed);
+        bytes
+    }
+
+    /// Decodifica l'envelope; la passphrase verifica il tag in [`Self::open`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, CryptoError> {
+        if bytes.len() < 1 + 16 + 1 + 12 + 16 || bytes[0] != 1 {
+            return Err(CryptoError::InvalidCiphertext);
+        }
+        let salt = bytes[1..17]
+            .try_into()
+            .map_err(|_| CryptoError::InvalidCiphertext)?;
+        let sealed = SealedBox::from_bytes(&bytes[17..])?;
+        Ok(Self { salt, sealed })
+    }
+}
+
+fn derive_passphrase_key(
+    passphrase: &str,
+    salt: &[u8; 16],
+) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
+    let params = Params::new(65_536, 3, 1, Some(32)).map_err(|_| CryptoError::KdfFailure)?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut key = Zeroizing::new([0u8; 32]);
+    argon2
+        .hash_password_into(passphrase.as_bytes(), salt, &mut *key)
+        .map_err(|_| CryptoError::KdfFailure)?;
+    Ok(key)
+}
+
 /// Errori esposti dalle primitive di questa crate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CryptoError {
@@ -166,6 +241,10 @@ pub enum CryptoError {
     AuthenticationFailed,
     /// Il messaggio supera i limiti del cifrario.
     MessageTooLong,
+    /// Passphrase vuota non ammessa.
+    EmptyPassphrase,
+    /// Derivazione della chiave fallita.
+    KdfFailure,
 }
 
 impl core::fmt::Display for CryptoError {
@@ -178,6 +257,8 @@ impl core::fmt::Display for CryptoError {
             Self::MessageTooLong => {
                 formatter.write_str("messaggio troppo lungo per ChaCha20-Poly1305")
             }
+            Self::EmptyPassphrase => formatter.write_str("la passphrase non può essere vuota"),
+            Self::KdfFailure => formatter.write_str("derivazione della chiave non riuscita"),
         }
     }
 }
@@ -248,6 +329,38 @@ mod tests {
         assert_eq!(
             SealedBox::from_bytes(&[1, 2, 3]),
             Err(CryptoError::InvalidCiphertext)
+        );
+    }
+
+    #[test]
+    fn passphrase_envelope_round_trips_and_rejects_wrong_passphrase() {
+        let envelope =
+            PassphraseEnvelope::seal("passphrase di test", b"seme account", b"identity:v1")
+                .unwrap();
+        let decoded = PassphraseEnvelope::from_bytes(&envelope.to_bytes()).unwrap();
+
+        assert_eq!(
+            &*decoded.open("passphrase di test", b"identity:v1").unwrap(),
+            b"seme account"
+        );
+        assert_eq!(
+            decoded
+                .open("passphrase errata", b"identity:v1")
+                .unwrap_err(),
+            CryptoError::AuthenticationFailed
+        );
+    }
+
+    #[test]
+    fn passphrase_envelope_rejects_empty_password_and_wrong_context() {
+        assert_eq!(
+            PassphraseEnvelope::seal("", b"x", b""),
+            Err(CryptoError::EmptyPassphrase)
+        );
+        let envelope = PassphraseEnvelope::seal("secret", b"x", b"first").unwrap();
+        assert_eq!(
+            envelope.open("secret", b"second").unwrap_err(),
+            CryptoError::AuthenticationFailed
         );
     }
 }
