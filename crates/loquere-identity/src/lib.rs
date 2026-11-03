@@ -22,6 +22,58 @@ impl AccountId {
         self.0
     }
 
+    /// Codifica l'identificatore in Base32 RFC 4648 senza padding (52 caratteri).
+    pub fn to_base32(self) -> String {
+        const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        let mut output = String::with_capacity(52);
+        let mut accumulator = 0u32;
+        let mut bits = 0u8;
+        for byte in self.0 {
+            accumulator = (accumulator << 8) | u32::from(byte);
+            bits += 8;
+            while bits >= 5 {
+                bits -= 5;
+                output.push(ALPHABET[((accumulator >> bits) & 31) as usize] as char);
+            }
+        }
+        if bits != 0 {
+            output.push(ALPHABET[((accumulator << (5 - bits)) & 31) as usize] as char);
+        }
+        output
+    }
+
+    /// Decodifica Base32 RFC 4648 senza padding e rifiuta codifiche non canoniche.
+    pub fn from_base32(value: &str) -> Result<Self, IdentityError> {
+        if value.len() != 52 {
+            return Err(IdentityError::InvalidEncoding);
+        }
+        let mut output = [0u8; 32];
+        let mut output_len = 0usize;
+        let mut accumulator = 0u32;
+        let mut bits = 0u8;
+        for byte in value.bytes() {
+            let value = match byte {
+                b'A'..=b'Z' => byte - b'A',
+                b'2'..=b'7' => byte - b'2' + 26,
+                _ => return Err(IdentityError::InvalidEncoding),
+            };
+            accumulator = (accumulator << 5) | u32::from(value);
+            bits += 5;
+            if bits >= 8 {
+                bits -= 8;
+                if output_len >= output.len() {
+                    return Err(IdentityError::InvalidEncoding);
+                }
+                output[output_len] = ((accumulator >> bits) & 0xff) as u8;
+                output_len += 1;
+            }
+        }
+        if output_len != 32 || bits != 4 || accumulator & 0x0f != 0 {
+            return Err(IdentityError::InvalidEncoding);
+        }
+        Self::from_bytes(output).map_err(IdentityError::from)
+    }
+
     /// Restituisce la chiave pubblica dell'account.
     pub fn public_key(self) -> Result<PublicKey, CryptoError> {
         PublicKey::from_bytes(self.0)
@@ -398,6 +450,34 @@ mod tests {
         assert_eq!(
             account.device_cert().device_id(),
             account.device_public_key()
+        );
+    }
+
+    #[test]
+    fn account_id_base32_is_52_character_canonical_round_trip() {
+        let account_id = AccountId(SecretKey::from_bytes([0x5a; 32]).public_key().to_bytes());
+        let encoded = account_id.to_base32();
+
+        assert_eq!(encoded.len(), 52);
+        assert_eq!(AccountId::from_base32(&encoded), Ok(account_id));
+        let mut noncanonical_padding = encoded.into_bytes();
+        *noncanonical_padding.last_mut().unwrap() = b'B';
+        let noncanonical_padding = String::from_utf8(noncanonical_padding).unwrap();
+        assert_eq!(
+            AccountId::from_base32(&noncanonical_padding),
+            Err(IdentityError::InvalidEncoding)
+        );
+    }
+
+    #[test]
+    fn account_id_base32_rejects_wrong_length_and_alphabet() {
+        assert_eq!(
+            AccountId::from_base32("A"),
+            Err(IdentityError::InvalidEncoding)
+        );
+        assert_eq!(
+            AccountId::from_base32(&"!".repeat(52)),
+            Err(IdentityError::InvalidEncoding)
         );
     }
 }
