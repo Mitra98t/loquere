@@ -5,8 +5,11 @@
 //! Questa crate espone firme Ed25519 tramite `ed25519-dalek`; non implementa
 //! primitive crittografiche proprie.
 
+use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, Payload};
+use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use ed25519_dalek::{Signature as DalekSignature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
+use zeroize::Zeroizing;
 
 /// Chiave pubblica Ed25519, serializzata nella forma canonica di 32 byte.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,6 +77,80 @@ impl SecretKey {
     }
 }
 
+/// Dati cifrati con ChaCha20-Poly1305.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SealedBox {
+    nonce: [u8; 12],
+    ciphertext: Vec<u8>,
+}
+
+impl SealedBox {
+    /// Cifra i dati con chiave da 32 byte e dati associati autenticati.
+    pub fn seal(
+        key: &[u8; 32],
+        plaintext: &[u8],
+        associated_data: &[u8],
+    ) -> Result<Self, CryptoError> {
+        let cipher = ChaCha20Poly1305::new(key.into());
+        let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let ciphertext = cipher
+            .encrypt(
+                &nonce,
+                Payload {
+                    msg: plaintext,
+                    aad: associated_data,
+                },
+            )
+            .map_err(|_| CryptoError::MessageTooLong)?;
+        Ok(Self {
+            nonce: nonce.into(),
+            ciphertext,
+        })
+    }
+
+    /// Autentica e decifra; il plaintext viene azzerato al rilascio.
+    pub fn open(
+        &self,
+        key: &[u8; 32],
+        associated_data: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+        let cipher = ChaCha20Poly1305::new(key.into());
+        let plaintext = cipher
+            .decrypt(
+                Nonce::from_slice(&self.nonce),
+                Payload {
+                    msg: &self.ciphertext,
+                    aad: associated_data,
+                },
+            )
+            .map_err(|_| CryptoError::AuthenticationFailed)?;
+        Ok(Zeroizing::new(plaintext))
+    }
+
+    /// Codifica la busta: versione 1, nonce da 12 byte, ciphertext e tag.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(1 + self.nonce.len() + self.ciphertext.len());
+        bytes.push(1);
+        bytes.extend_from_slice(&self.nonce);
+        bytes.extend_from_slice(&self.ciphertext);
+        bytes
+    }
+
+    /// Decodifica una busta versionata; la verifica del tag avviene in [`Self::open`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, CryptoError> {
+        if bytes.len() < 1 + 12 + 16 || bytes[0] != 1 {
+            return Err(CryptoError::InvalidCiphertext);
+        }
+        let nonce = bytes[1..13]
+            .try_into()
+            .map_err(|_| CryptoError::InvalidCiphertext)?;
+        Ok(Self {
+            nonce,
+            ciphertext: bytes[13..].to_vec(),
+        })
+    }
+}
+
 /// Errori esposti dalle primitive di questa crate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CryptoError {
@@ -81,6 +158,12 @@ pub enum CryptoError {
     InvalidPublicKey,
     /// Firma non valida per chiave e messaggio forniti.
     InvalidSignature,
+    /// La busta cifrata è troncata o usa una versione non supportata.
+    InvalidCiphertext,
+    /// Il tag AEAD non corrisponde a chiave, dati associati o ciphertext.
+    AuthenticationFailed,
+    /// Il messaggio supera i limiti del cifrario.
+    MessageTooLong,
 }
 
 impl core::fmt::Display for CryptoError {
@@ -88,6 +171,11 @@ impl core::fmt::Display for CryptoError {
         match self {
             Self::InvalidPublicKey => formatter.write_str("chiave pubblica Ed25519 non valida"),
             Self::InvalidSignature => formatter.write_str("firma Ed25519 non valida"),
+            Self::InvalidCiphertext => formatter.write_str("busta cifrata non valida"),
+            Self::AuthenticationFailed => formatter.write_str("autenticazione AEAD non riuscita"),
+            Self::MessageTooLong => {
+                formatter.write_str("messaggio troppo lungo per ChaCha20-Poly1305")
+            }
         }
     }
 }
@@ -129,5 +217,35 @@ mod tests {
 
         assert_eq!(secret.public_key(), restored.public_key());
         assert_eq!(secret.sign(b"test"), restored.sign(b"test"));
+    }
+
+    #[test]
+    fn sealed_box_round_trips_and_authenticates_associated_data() {
+        let key = [9; 32];
+        let sealed = SealedBox::seal(&key, b"segreto", b"account-key:v1").unwrap();
+        let encoded = sealed.to_bytes();
+        let decoded = SealedBox::from_bytes(&encoded).unwrap();
+
+        assert_eq!(&*decoded.open(&key, b"account-key:v1").unwrap(), b"segreto");
+        assert_eq!(
+            decoded.open(&key, b"device-key:v1").unwrap_err(),
+            CryptoError::AuthenticationFailed
+        );
+    }
+
+    #[test]
+    fn sealed_box_rejects_tampering_and_malformed_input() {
+        let key = [3; 32];
+        let mut bytes = SealedBox::seal(&key, b"payload", b"").unwrap().to_bytes();
+        *bytes.last_mut().unwrap() ^= 1;
+        let tampered = SealedBox::from_bytes(&bytes).unwrap();
+        assert_eq!(
+            tampered.open(&key, b"").unwrap_err(),
+            CryptoError::AuthenticationFailed
+        );
+        assert_eq!(
+            SealedBox::from_bytes(&[1, 2, 3]),
+            Err(CryptoError::InvalidCiphertext)
+        );
     }
 }
