@@ -973,6 +973,8 @@ Loquere/
 
 **D-33. Demultiplexing UDP pre-QUIC.** `loquere-net` rimuove il prefisso solo quando il payload dopo i 40 byte è un QUIC v1 Initial; gli Initial scaduti o con MAC non valido vengono comunque inviati al controllo gate e scartati, senza euristiche sull'orario per riconoscere il prefisso. Gli altri pacchetti passano solo se il destination CID è un CID locale autenticato. Nessun socket o invio è implementato da questo filtro.
 
+**D-34. Adapter UDP portabile iniziale.** `UdpSocketAdapter` usa `std::net::UdpSocket` bloccante, buffer ricezione del chiamante e timeout configurabile nel thread `net`. Invia solo metadati rappresentabili dall'API standard; ECN, GSO o override IP sorgente non applicabile sono errori espliciti, mai ignorati. Un backend OS-specifico potrà aggiungere queste ottimizzazioni senza cambiare il filtro sans-IO.
+
 ---
 
 ## 17. Sicurezza e privacy
@@ -1248,6 +1250,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Metadati UDP | Destinazione, IP sorgente, ECN e segment size preservati attraverso il confine sans-IO | §8.3 (D-31) |
 | Gate pre-autenticazione | Token invito/segreto peer + HKDF destinatario; key ID opaco, non chiave pubblica | §8.3 (D-32) |
 | Demultiplexing ingresso UDP | Initial identificato dopo il prefisso; altri pacchetti richiedono CID locale autenticato | §8.3 (D-33) |
+| Adapter UDP | Socket bloccanti `std`, due famiglie bindate separatamente; metadati non applicabili rifiutati esplicitamente | §9.2 (D-34) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

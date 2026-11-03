@@ -2,8 +2,103 @@
 
 //! Filtro dei datagrammi UDP prima del driver QUIC.
 
+use loquere_wire::QuicTransmit;
 use loquere_wire::{GateDecision, GateError, QuicNode, SilentFilter};
-use std::net::SocketAddr;
+use std::io;
+use std::net::{SocketAddr, UdpSocket};
+use std::time::Duration;
+
+/// Socket UDP bloccante da possedere nel thread `net`.
+///
+/// Il buffer di ricezione appartiene al chiamante. L'adapter usa solo API
+/// portabili `std`; trasmissioni che richiedono ECN, source-IP override o GSO
+/// falliscono esplicitamente finché non sarà aggiunto il backend OS dedicato.
+pub struct UdpSocketAdapter {
+    socket: UdpSocket,
+}
+
+/// Datagramma ricevuto dalla socket, senza interpretazione del payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReceivedDatagram {
+    /// Byte scritti nel buffer fornito a [`UdpSocketAdapter::receive`].
+    pub length: usize,
+    /// Indirizzo sorgente UDP.
+    pub source: SocketAddr,
+}
+
+/// Errore di trasporto UDP o metadato non supportato dall'adapter portabile.
+#[derive(Debug)]
+pub enum UdpSocketError {
+    /// Operazione socket fallita.
+    Io(io::Error),
+    /// L'operazione richiede un backend OS non ancora implementato.
+    UnsupportedMetadata(&'static str),
+    /// Datagramma più grande del massimo payload UDP IP consentito.
+    DatagramTooLarge,
+}
+
+impl UdpSocketAdapter {
+    /// Apre un socket su un indirizzo esplicito. Per IPv4 e IPv6 si creano
+    /// adapter distinti, entrambi posseduti dal thread `net`.
+    pub fn bind(address: SocketAddr, read_timeout: Duration) -> Result<Self, UdpSocketError> {
+        let socket = UdpSocket::bind(address).map_err(UdpSocketError::Io)?;
+        socket
+            .set_read_timeout(Some(read_timeout))
+            .map_err(UdpSocketError::Io)?;
+        Ok(Self { socket })
+    }
+
+    /// Indirizzo locale effettivamente assegnato, utile quando la porta era 0.
+    pub fn local_addr(&self) -> Result<SocketAddr, UdpSocketError> {
+        self.socket.local_addr().map_err(UdpSocketError::Io)
+    }
+
+    /// Riceve un singolo datagramma nel buffer fornito, evitando allocazioni
+    /// interne e mantenendo l'indirizzo sorgente.
+    pub fn receive(&self, buffer: &mut [u8]) -> Result<ReceivedDatagram, UdpSocketError> {
+        let (length, source) = self.socket.recv_from(buffer).map_err(UdpSocketError::Io)?;
+        Ok(ReceivedDatagram { length, source })
+    }
+
+    /// Invia un `Transmit` Quinn se i suoi metadati sono rappresentabili
+    /// dall'API UDP portabile. Non modifica il payload QUIC.
+    pub fn send(&self, transmit: &QuicTransmit) -> Result<usize, UdpSocketError> {
+        if transmit.payload.len() > 65_507 {
+            return Err(UdpSocketError::DatagramTooLarge);
+        }
+        if transmit.ecn.is_some() {
+            return Err(UdpSocketError::UnsupportedMetadata("ECN"));
+        }
+        if transmit.segment_size.is_some() {
+            return Err(UdpSocketError::UnsupportedMetadata("UDP GSO"));
+        }
+        if let Some(source_ip) = transmit.source_ip {
+            let local_ip = self.socket.local_addr().map_err(UdpSocketError::Io)?.ip();
+            if source_ip != local_ip {
+                return Err(UdpSocketError::UnsupportedMetadata(
+                    "source IP diverso dall'indirizzo di bind",
+                ));
+            }
+        }
+        self.socket
+            .send_to(&transmit.payload, transmit.destination)
+            .map_err(UdpSocketError::Io)
+    }
+}
+
+impl std::fmt::Display for UdpSocketError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "socket UDP: {error}"),
+            Self::UnsupportedMetadata(metadata) => {
+                write!(formatter, "metadato UDP non supportato: {metadata}")
+            }
+            Self::DatagramTooLarge => formatter.write_str("datagramma UDP troppo grande"),
+        }
+    }
+}
+
+impl std::error::Error for UdpSocketError {}
 
 /// Pacchetto ammesso dal filtro UDP, pronto per [`QuicNode::receive`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,6 +204,7 @@ fn destination_cid(datagram: &[u8]) -> Option<&[u8]> {
 mod tests {
     use super::*;
     use loquere_wire::gate_initial_datagram;
+    use std::time::Duration;
 
     fn source(port: u16) -> SocketAddr {
         SocketAddr::from(([192, 0, 2, 99], port))
@@ -170,5 +266,57 @@ mod tests {
         // Expired packets are rejected by the gate even though their prefix
         // cannot be distinguished by guessing based on the current timestamp.
         assert_eq!(filter.inspect(&node, source(4000), &datagram, 10_000), None);
+    }
+
+    #[test]
+    fn udp_adapter_sends_and_receives_without_changing_payload() {
+        let loopback = SocketAddr::from(([127, 0, 0, 1], 0));
+        let first = UdpSocketAdapter::bind(loopback, Duration::from_secs(1)).unwrap();
+        let second = UdpSocketAdapter::bind(loopback, Duration::from_secs(1)).unwrap();
+        let destination = second.local_addr().unwrap();
+        let payload = b"raw quic payload".to_vec();
+        let transmit = QuicTransmit {
+            destination,
+            source_ip: None,
+            ecn: None,
+            segment_size: None,
+            connection: None,
+            gate_key_id: None,
+            payload: payload.clone(),
+        };
+
+        assert_eq!(first.send(&transmit).unwrap(), payload.len());
+        let mut buffer = [0u8; 64];
+        let received = second.receive(&mut buffer).unwrap();
+        assert_eq!(&buffer[..received.length], payload);
+        assert_eq!(received.source, first.local_addr().unwrap());
+    }
+
+    #[test]
+    fn udp_adapter_rejects_metadata_it_cannot_apply() {
+        let socket = UdpSocketAdapter::bind(
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            Duration::from_millis(10),
+        )
+        .unwrap();
+        let mut transmit = QuicTransmit {
+            destination: source(1),
+            source_ip: None,
+            ecn: Some(quinn_proto::EcnCodepoint::Ect0),
+            segment_size: None,
+            connection: None,
+            gate_key_id: None,
+            payload: vec![1, 2, 3],
+        };
+        assert!(matches!(
+            socket.send(&transmit),
+            Err(UdpSocketError::UnsupportedMetadata("ECN"))
+        ));
+        transmit.ecn = None;
+        transmit.segment_size = Some(1200);
+        assert!(matches!(
+            socket.send(&transmit),
+            Err(UdpSocketError::UnsupportedMetadata("UDP GSO"))
+        ));
     }
 }

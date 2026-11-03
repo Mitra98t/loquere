@@ -382,6 +382,7 @@ name = "loquere-net"
 version = "0.1.0"
 dependencies = [
  "loquere-wire",
+ "quinn-proto",
 ]
 
 [[package]]
