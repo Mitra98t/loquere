@@ -242,6 +242,8 @@ Profile {
 
 **D-13.** L'account è la radice di fiducia; ogni dispositivo ha chiavi proprie, certificate dall'account. Gli amici vedono **un** contatto, qualunque sia il numero di dispositivi.
 
+**D-20. Encoding di `DeviceCert`.** La firma copre una codifica binaria canonica, senza dipendenze di serializzazione: il dominio ASCII `loquere:device-cert:v1\0`, seguito nell'ordine da `account_id` (32 byte), `device_id` (32 byte), `role` (1 byte: `0` Admin, `1` Member), `created_at` (u64 little-endian, secondi Unix), lunghezza del nome (u16 little-endian) e nome UTF-8. La lunghezza è in byte e deve essere compresa tra 1 e 65535. Il prefisso di dominio separa queste firme da ogni altro uso della stessa chiave.
+
 ```
 DeviceCert {
   account_id,
@@ -1202,6 +1204,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Mobile | **push opzionale**: UnifiedPush su Android, gateway minimo del progetto su iOS (D-19) | §20 |
 | Limiti di gruppo | **16 audio / 8 video** | §2.1 |
 | Nomi di crate e binari | **tutto minuscolo** (`loquere-wire`, `loquere-cli`, schema `loquere://`); "Loquere" solo come nome del prodotto e della cartella dati | §5.2 |
+| Encoding di `DeviceCert` | binario canonico versionato e separato per dominio, senza crate di serializzazione | §6.4 (D-20) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

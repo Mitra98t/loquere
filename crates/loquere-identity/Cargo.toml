@@ -1,0 +1,10 @@
+[package]
+name = "loquere-identity"
+description = "Account, dispositivi e identità Loquere"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+loquere-crypto = { path = "../loquere-crypto" }

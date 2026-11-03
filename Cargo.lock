@@ -163,6 +163,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "loquere-identity"
+version = "0.1.0"
+dependencies = [
+ "loquere-crypto",
+]
+
+[[package]]
 name = "pkcs8"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
