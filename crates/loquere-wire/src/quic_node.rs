@@ -28,6 +28,11 @@ pub struct QuicTransmit {
     pub ecn: Option<quinn_proto::EcnCodepoint>,
     /// Segment size per UDP GSO, quando disponibile.
     pub segment_size: Option<usize>,
+    /// Connessione proprietaria della trasmissione, assente per risposte
+    /// stateless dell'endpoint.
+    pub connection: Option<ConnectionHandle>,
+    /// Credenziale gate associata al peer, se il trasporto usa il filtro.
+    pub gate_key_id: Option<[u8; 16]>,
     /// Byte UDP da inviare senza ulteriori modifiche.
     pub payload: Vec<u8>,
 }
@@ -105,6 +110,7 @@ const MAX_STREAM_READ_BYTES: usize = 64 * 1024;
 pub struct QuicNode {
     endpoint: Endpoint,
     connections: BTreeMap<ConnectionHandle, Connection>,
+    gate_keys: BTreeMap<ConnectionHandle, [u8; 16]>,
 }
 
 impl QuicNode {
@@ -128,6 +134,7 @@ impl QuicNode {
         Self {
             endpoint,
             connections: BTreeMap::new(),
+            gate_keys: BTreeMap::new(),
         }
     }
 
@@ -138,9 +145,13 @@ impl QuicNode {
         remote: SocketAddr,
         server_name: &str,
         config: ClientConfig,
+        gate_key_id: Option<[u8; 16]>,
     ) -> Result<ConnectionHandle, quinn_proto::ConnectError> {
         let (handle, connection) = self.endpoint.connect(now, config, remote, server_name)?;
         self.connections.insert(handle, connection);
+        if let Some(gate_key_id) = gate_key_id {
+            self.gate_keys.insert(handle, gate_key_id);
+        }
         Ok(handle)
     }
 
@@ -151,6 +162,7 @@ impl QuicNode {
         remote: SocketAddr,
         local_ip: Option<IpAddr>,
         ecn: Option<quinn_proto::EcnCodepoint>,
+        gate_key_id: Option<[u8; 16]>,
         datagram: &[u8],
     ) -> QuicOutput {
         let mut output = QuicOutput::default();
@@ -173,20 +185,29 @@ impl QuicNode {
                 match self.endpoint.accept(incoming, now, &mut buffer, None) {
                     Ok((handle, connection)) => {
                         self.connections.insert(handle, connection);
+                        if let Some(gate_key_id) = gate_key_id {
+                            self.gate_keys.insert(handle, gate_key_id);
+                        }
                     }
                     Err(error) => {
                         if let Some(response) = error.response {
-                            output
-                                .datagrams
-                                .push(QuicTransmit::from_transmit(response, &buffer));
+                            output.datagrams.push(QuicTransmit::from_transmit(
+                                response,
+                                &buffer,
+                                None,
+                                gate_key_id,
+                            ));
                         }
                     }
                 }
             }
             Some(DatagramEvent::Response(transmit)) => {
-                output
-                    .datagrams
-                    .push(QuicTransmit::from_transmit(transmit, &buffer));
+                output.datagrams.push(QuicTransmit::from_transmit(
+                    transmit,
+                    &buffer,
+                    None,
+                    gate_key_id,
+                ));
             }
             None => {}
         }
@@ -378,9 +399,12 @@ impl QuicNode {
                 let Some(transmit) = connection.poll_transmit(now, 1, &mut buffer) else {
                     break;
                 };
-                output
-                    .datagrams
-                    .push(QuicTransmit::from_transmit(transmit, &buffer));
+                output.datagrams.push(QuicTransmit::from_transmit(
+                    transmit,
+                    &buffer,
+                    Some(handle),
+                    self.gate_keys.get(&handle).copied(),
+                ));
             }
             while let Some(event) = connection.poll() {
                 match event {
@@ -405,18 +429,26 @@ impl QuicNode {
         }
         for handle in lost {
             self.connections.remove(&handle);
+            self.gate_keys.remove(&handle);
         }
         output.events.dedup();
     }
 }
 
 impl QuicTransmit {
-    fn from_transmit(transmit: quinn_proto::Transmit, buffer: &[u8]) -> Self {
+    fn from_transmit(
+        transmit: quinn_proto::Transmit,
+        buffer: &[u8],
+        connection: Option<ConnectionHandle>,
+        gate_key_id: Option<[u8; 16]>,
+    ) -> Self {
         Self {
             destination: transmit.destination,
             source_ip: transmit.src_ip,
             ecn: transmit.ecn,
             segment_size: transmit.segment_size,
+            connection,
+            gate_key_id,
             payload: buffer[..transmit.size].to_vec(),
         }
     }
@@ -533,10 +565,17 @@ mod tests {
         );
         let client_addr = SocketAddr::from(([127, 0, 0, 1], 41001));
         let server_addr = SocketAddr::from(([127, 0, 0, 1], 41002));
+        let gate_key_id = [0x7b; 16];
         let mut client = QuicNode::client(random_key());
         let mut server = QuicNode::server(random_key(), server_config);
         let client_handle = client
-            .connect(Instant::now(), server_addr, "loquere", client_config)
+            .connect(
+                Instant::now(),
+                server_addr,
+                "loquere",
+                client_config,
+                Some(gate_key_id),
+            )
             .unwrap();
         let mut client_connected = false;
         let mut server_connected = false;
@@ -565,9 +604,23 @@ mod tests {
             enqueue_output(&mut queue, 1, server_output);
             while let Some((destination, datagram)) = queue.pop_front() {
                 let output = if destination == 0 {
-                    server.receive(now, client_addr, None, None, &datagram.payload)
+                    server.receive(
+                        now,
+                        client_addr,
+                        None,
+                        None,
+                        Some(gate_key_id),
+                        &datagram.payload,
+                    )
                 } else {
-                    client.receive(now, server_addr, None, None, &datagram.payload)
+                    client.receive(
+                        now,
+                        server_addr,
+                        None,
+                        None,
+                        Some(gate_key_id),
+                        &datagram.payload,
+                    )
                 };
                 record_events(
                     &output.events,
@@ -599,7 +652,16 @@ mod tests {
         let now = start + Duration::from_secs(2);
         let outgoing = client.poll(now);
         for datagram in outgoing.datagrams {
-            let _ = server.receive(now, client_addr, None, None, &datagram.payload);
+            assert_eq!(datagram.connection, Some(client_handle));
+            assert_eq!(datagram.gate_key_id, Some(gate_key_id));
+            let _ = server.receive(
+                now,
+                client_addr,
+                None,
+                None,
+                Some(gate_key_id),
+                &datagram.payload,
+            );
         }
         let incoming_stream = server.accept_bi_stream(server_handle).unwrap();
         let (read, _output) = server
@@ -617,6 +679,7 @@ mod tests {
                 client_addr,
                 None,
                 None,
+                Some(gate_key_id),
                 &datagram.payload,
             );
         }
