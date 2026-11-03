@@ -1,0 +1,10 @@
+[package]
+name = "loquere-net"
+description = "Socket UDP e filtro dei candidati di rete Loquere"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+loquere-wire = { path = "../loquere-wire" }

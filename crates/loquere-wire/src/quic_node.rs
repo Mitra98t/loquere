@@ -111,6 +111,7 @@ pub struct QuicNode {
     endpoint: Endpoint,
     connections: BTreeMap<ConnectionHandle, Connection>,
     gate_keys: BTreeMap<ConnectionHandle, [u8; 16]>,
+    cid_key: Arc<Zeroizing<[u8; 32]>>,
 }
 
 impl QuicNode {
@@ -127,14 +128,17 @@ impl QuicNode {
 
     fn new(reset_key: [u8; 32], server_config: Option<Arc<ServerConfig>>) -> Self {
         let reset_key = Arc::new(ResetKey(Zeroizing::new(reset_key)));
-        let cid_key = Arc::new(random_key());
+        let cid_key = Arc::new(Zeroizing::new(random_key()));
+        let generator_key = Arc::clone(&cid_key);
         let mut endpoint_config = EndpointConfig::new(reset_key);
-        endpoint_config.cid_generator(move || Box::new(AuthenticatedCidGenerator::new(*cid_key)));
+        endpoint_config
+            .cid_generator(move || Box::new(AuthenticatedCidGenerator::new(**generator_key)));
         let endpoint = Endpoint::new(Arc::new(endpoint_config), server_config, false, None);
         Self {
             endpoint,
             connections: BTreeMap::new(),
             gate_keys: BTreeMap::new(),
+            cid_key,
         }
     }
 
@@ -246,6 +250,20 @@ impl QuicNode {
         self.connections
             .get(&handle)
             .map(|connection| !connection.is_handshaking())
+    }
+
+    /// Valida un Connection ID generato localmente, per filtrare pacchetti
+    /// successivi all'Initial prima di passarli a Quinn.
+    pub fn validates_local_connection_id(&self, cid: &[u8]) -> bool {
+        if cid.len() != 16 {
+            return false;
+        }
+        let Ok(mut mac) = CidMac::new_from_slice(&**self.cid_key) else {
+            return false;
+        };
+        mac.update(&cid[..8]);
+        let expected = mac.finalize().into_bytes();
+        bool::from(expected.as_slice().ct_eq(&cid[8..]))
     }
 
     /// Apre uno stream bidirezionale QUIC.
@@ -547,6 +565,18 @@ mod tests {
         fn now(&self) -> SystemTime {
             SystemTime::UNIX_EPOCH
         }
+    }
+
+    #[test]
+    fn local_connection_id_filter_authenticates_generated_ids() {
+        let node = QuicNode::client(random_key());
+        let mut generator = AuthenticatedCidGenerator::new(**node.cid_key);
+        let connection_id = generator.generate_cid();
+        assert!(node.validates_local_connection_id(&connection_id));
+        let mut forged = connection_id;
+        forged[0] ^= 1;
+        assert!(!node.validates_local_connection_id(&forged));
+        assert!(!node.validates_local_connection_id(&[0; 16]));
     }
 
     #[test]

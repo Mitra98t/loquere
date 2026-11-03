@@ -25,7 +25,12 @@ pub enum GateDecision<'a> {
     /// Pacchetto scartato senza inviare risposta.
     Drop,
     /// Datagramma autorizzato; contiene il pacchetto QUIC senza prefisso.
-    PassInitial { packet: &'a [u8] },
+    PassInitial {
+        /// Pacchetto QUIC Initial senza prefisso Loquere.
+        packet: &'a [u8],
+        /// Credenziale che ha autenticato il prefisso.
+        key_id: [u8; KEY_ID_LEN],
+    },
 }
 
 #[derive(Default)]
@@ -102,7 +107,7 @@ impl SilentFilter {
         };
         let provided_mac = &datagram[8 + KEY_ID_LEN..PREFIX_LEN];
         let packet = &datagram[PREFIX_LEN..];
-        if packet[0] & 0x80 == 0 {
+        if !is_quic_initial_packet(packet) {
             return GateDecision::Drop;
         }
         let Some(key) = self.credentials.get(&key_id) else {
@@ -136,7 +141,7 @@ impl SilentFilter {
             return GateDecision::Drop;
         }
         source_state.seen.insert((timestamp, replay_id));
-        GateDecision::PassInitial { packet }
+        GateDecision::PassInitial { packet, key_id }
     }
 
     /// Numero di sorgenti per cui è attivo un set anti-replay.
@@ -154,7 +159,7 @@ pub fn gate_initial_datagram(
     timestamp: u64,
     packet: &[u8],
 ) -> Result<Vec<u8>, GateError> {
-    if packet.is_empty() || packet[0] & 0x80 == 0 {
+    if !is_quic_initial_packet(packet) {
         return Err(GateError::NotInitialPacket);
     }
     let key = derive_gate_key(secret, &recipient_device_id)?;
@@ -167,6 +172,24 @@ pub fn gate_initial_datagram(
     datagram.extend_from_slice(&mac);
     datagram.extend_from_slice(packet);
     Ok(datagram)
+}
+
+/// Deriva il key ID che il destinatario deve autorizzare per `secret`.
+pub fn gate_key_id_for(
+    recipient_device_id: [u8; 32],
+    secret: &[u8],
+) -> Result<[u8; KEY_ID_LEN], GateError> {
+    let key = derive_gate_key(secret, &recipient_device_id)?;
+    Ok(gate_key_id(&key))
+}
+
+/// Riconosce un pacchetto QUIC Initial v1 non prefissato.
+pub fn is_quic_initial_packet(packet: &[u8]) -> bool {
+    if packet.len() < 5 || packet[0] & 0x80 == 0 {
+        return false;
+    }
+    let version = u32::from_be_bytes(packet[1..5].try_into().expect("length checked"));
+    version == 1 && packet[0] & 0x30 == 0
 }
 
 fn derive_gate_key(
@@ -257,7 +280,8 @@ mod tests {
         assert_eq!(
             filter.inspect_initial(source(4000), &datagram, 1_030),
             GateDecision::PassInitial {
-                packet: &datagram[PREFIX_LEN..]
+                packet: &datagram[PREFIX_LEN..],
+                key_id: gate_key_id_for(device_id, &secret).unwrap(),
             }
         );
         assert_eq!(
@@ -355,5 +379,13 @@ mod tests {
             gate_initial_datagram(first_recipient, &secret, 700, &[0x40]),
             Err(GateError::NotInitialPacket)
         );
+    }
+
+    #[test]
+    fn only_quic_v1_initial_packets_receive_gate_prefixes() {
+        assert!(is_quic_initial_packet(&[0xc0, 0, 0, 0, 1]));
+        assert!(!is_quic_initial_packet(&[0xe0, 0, 0, 0, 1]));
+        assert!(!is_quic_initial_packet(&[0xc0, 0, 0, 0, 2]));
+        assert!(!is_quic_initial_packet(&[0x40, 0, 0, 0, 1]));
     }
 }

@@ -378,6 +378,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "loquere-net"
+version = "0.1.0"
+dependencies = [
+ "loquere-wire",
+]
+
+[[package]]
 name = "loquere-sim"
 version = "0.1.0"
 

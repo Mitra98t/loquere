@@ -957,7 +957,7 @@ Loquere/
 
 **D-25. Framing del log locale.** Ogni record è `lunghezza (u32 little-endian) ‖ SealedBox-v1`; massimo 16 MiB ciphertext per record. I dati associati AEAD sono `loquere:store-record:v1\0 ‖ seq(u64 little-endian)`, dove `seq` è l'ordine del record dal valore zero. All'avvio una coda con header/ciphertext incompleto viene troncata all'ultimo record valido; lunghezze impossibili e tag non validi sono errori, non vengono scartati come se fossero crash.
 
-**D-26. Prefisso del filtro silenzioso.** Il timestamp sul filo è u64 big-endian; MAC BLAKE2s keyed a 16 byte su `timestamp ‖ pacchetto QUIC`, con chiave derivata `BLAKE2s("loquere-gate" ‖ device_id)`. Il MAC si confronta in tempo costante. Il filtro conserva per sorgente le coppie timestamp/MAC già viste entro la finestra di 120 s; i limiti sono 1024 sorgenti e 4096 pacchetti validi per sorgente.
+**D-26. Prefisso del filtro silenzioso (superato da D-32).** Il formato corrente è definito da D-32: timestamp u64 BE, key ID opaco a 16 byte e MAC keyed BLAKE2s a 16 byte; anti-replay limitato a 1024 sorgenti e 4096 pacchetti validi per sorgente.
 
 **D-27. Simulatore deterministico.** `loquere-sim` usa un generatore SplitMix64 con seed esplicito (solo test, mai per segreti) e link diretti configurabili con latenza, jitter uniforme, perdita, banda e partizioni. Pacchetti consegnati sono ordinati per tempo e sequenza di invio; nessun socket o clock di sistema.
 
@@ -971,6 +971,8 @@ Loquere/
 
 **D-32. Credenziale segreta del filtro.** Il MAC pre-autenticazione non usa più il DeviceId pubblico come chiave. Ogni relazione usa un segreto casuale condiviso; il token segreto dell'invito lo inizializza al primo contatto e viene conservato alla successiva accettazione. Il prefisso porta un key ID opaco per selezionare la credenziale locale; la chiave MAC è derivata con HKDF-SHA256 e domain separation sul DeviceId destinatario.
 
+**D-33. Demultiplexing UDP pre-QUIC.** `loquere-net` rimuove il prefisso solo quando il payload dopo i 40 byte è un QUIC v1 Initial; gli Initial scaduti o con MAC non valido vengono comunque inviati al controllo gate e scartati, senza euristiche sull'orario per riconoscere il prefisso. Gli altri pacchetti passano solo se il destination CID è un CID locale autenticato. Nessun socket o invio è implementato da questo filtro.
+
 ---
 
 ## 17. Sicurezza e privacy
@@ -980,7 +982,7 @@ Loquere/
 | Avversario | Cosa può fare | Contromisure |
 |---|---|---|
 | Osservatore di rete passivo | vede IP, tempi, volumi | tutto cifrato; nessuna identità nelle intestazioni (solo indici di sessione) |
-| Sconosciuto che scansiona porte | — | porta casuale, filtro silenzioso, nessuna risposta senza conoscere la chiave del dispositivo (D-03, D-14, §9.6) |
+| Sconosciuto che scansiona porte | — | porta casuale, filtro silenzioso, nessuna risposta senza conoscere la credenziale condivisa peer (D-03, D-14, §9.6) |
 | Chi registra e rigioca un handshake | — | timestamp nel prefisso del filtro, 0-RTT disattivato (§8.3) |
 | Dispositivo malevolo sulla LAN | finge di essere il router, ascolta i beacon | risposte UPnP solo dal gateway (D-15); beacon solo su reti fidate (§10.4) |
 | Chi ha ottenuto un tuo link di invito | può mandarti una richiesta di amicizia | conferma manuale predefinita, inviti monouso e a scadenza, revoca |
@@ -1238,13 +1240,14 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Protezione account con passphrase | MK casuale avvolta da Argon2id in un envelope esterno versionato | §6.1 (D-23) |
 | Payload invito verificabile | include `DeviceCert` completo; firma DK domain-separated e Base32 RFC 4648 | §7.1 (D-24) |
 | Framing append-only locale | lunghezza u32 LE + envelope AEAD; sequenza autenticata; limite 16 MiB | §16 (D-25) |
-| Prefisso filtro silenzioso | timestamp BE, BLAKE2s-MAC a 16 byte, anti-replay per sorgente | §8.3 (D-26) |
+| Prefisso filtro silenzioso | timestamp BE + key ID opaco + MAC BLAKE2s a 16 byte, anti-replay limitato | §8.3 (D-26, D-32) |
 | Simulatore | SplitMix64 deterministico per seed, link con latenza/jitter/perdita/banda/partizioni | §22 (D-27) |
 | Token Retry QUIC | HKDF-SHA256 domain-separated + ChaCha20-Poly1305; tempo iniettato | §8.3 (D-28) |
 | Driver QUIC | `QuicNode` sans-IO sopra `quinn-proto`; ingressi/uscite espliciti, socket al chiamante | §8.3 (D-29) |
 | Eventi QUIC | Eventi stream/datagrammi inoltrati all'engine; connessioni perse ripulite | §8.3 (D-30) |
 | Metadati UDP | Destinazione, IP sorgente, ECN e segment size preservati attraverso il confine sans-IO | §8.3 (D-31) |
 | Gate pre-autenticazione | Token invito/segreto peer + HKDF destinatario; key ID opaco, non chiave pubblica | §8.3 (D-32) |
+| Demultiplexing ingresso UDP | Initial identificato dopo il prefisso; altri pacchetti richiedono CID locale autenticato | §8.3 (D-33) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 
