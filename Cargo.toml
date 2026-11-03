@@ -6,6 +6,7 @@ members = [
     "crates/loquere-store",
     "crates/loquere-wire",
     "crates/loquere-sim",
+    "apps/loquere-cli",
 ]
 
 [workspace.package]
