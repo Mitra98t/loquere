@@ -8,10 +8,15 @@ rust-version.workspace = true
 
 [dependencies]
 blake2.workspace = true
+chacha20poly1305.workspace = true
+hkdf.workspace = true
 loquere-crypto = { path = "../loquere-crypto" }
 quinn-proto.workspace = true
+rand_core.workspace = true
 rustls.workspace = true
+sha2.workspace = true
 subtle.workspace = true
+zeroize.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"
