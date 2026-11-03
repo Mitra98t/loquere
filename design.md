@@ -967,6 +967,8 @@ Loquere/
 
 **D-30. Eventi di trasporto verso l'engine.** Il driver non interpreta gli eventi applicativi di QUIC: consegna allo strato superiore notifiche di stream e datagrammi, oltre a connessione stabilita/persa. Una connessione persa viene rimossa dalla tabella interna dopo aver consumato gli eventi terminali.
 
+**D-31. Metadati UDP QUIC.** Il driver conserva su ogni `Transmit` destinazione, IP sorgente richiesto, ECN e segmentazione GSO; i metadati ECN ricevuti sono passati a `quinn-proto`. Il layer socket applica questi suggerimenti quando supportati dal sistema operativo e dal percorso.
+
 ---
 
 ## 17. Sicurezza e privacy
@@ -1237,6 +1239,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Token Retry QUIC | HKDF-SHA256 domain-separated + ChaCha20-Poly1305; tempo iniettato | §8.3 (D-28) |
 | Driver QUIC | `QuicNode` sans-IO sopra `quinn-proto`; ingressi/uscite espliciti, socket al chiamante | §8.3 (D-29) |
 | Eventi QUIC | Eventi stream/datagrammi inoltrati all'engine; connessioni perse ripulite | §8.3 (D-30) |
+| Metadati UDP | Destinazione, IP sorgente, ECN e segment size preservati attraverso il confine sans-IO | §8.3 (D-31) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

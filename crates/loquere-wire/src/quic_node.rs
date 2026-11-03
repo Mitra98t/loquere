@@ -22,6 +22,12 @@ type CidMac = Blake2sMac<U8>;
 pub struct QuicTransmit {
     /// Destinazione del datagramma.
     pub destination: SocketAddr,
+    /// Indirizzo locale da usare come sorgente, se Quinn lo richiede.
+    pub source_ip: Option<IpAddr>,
+    /// Codepoint ECN da applicare al datagramma.
+    pub ecn: Option<quinn_proto::EcnCodepoint>,
+    /// Segment size per UDP GSO, quando disponibile.
+    pub segment_size: Option<usize>,
     /// Byte UDP da inviare senza ulteriori modifiche.
     pub payload: Vec<u8>,
 }
@@ -105,6 +111,7 @@ impl QuicNode {
         now: Instant,
         remote: SocketAddr,
         local_ip: Option<IpAddr>,
+        ecn: Option<quinn_proto::EcnCodepoint>,
         datagram: &[u8],
     ) -> QuicOutput {
         let mut output = QuicOutput::default();
@@ -113,7 +120,7 @@ impl QuicNode {
             now,
             remote,
             local_ip,
-            None,
+            ecn,
             BytesMut::from(datagram),
             &mut buffer,
         );
@@ -130,19 +137,17 @@ impl QuicNode {
                     }
                     Err(error) => {
                         if let Some(response) = error.response {
-                            output.datagrams.push(QuicTransmit {
-                                destination: response.destination,
-                                payload: buffer[..response.size].to_vec(),
-                            });
+                            output
+                                .datagrams
+                                .push(QuicTransmit::from_transmit(response, &buffer));
                         }
                     }
                 }
             }
             Some(DatagramEvent::Response(transmit)) => {
-                output.datagrams.push(QuicTransmit {
-                    destination: transmit.destination,
-                    payload: buffer[..transmit.size].to_vec(),
-                });
+                output
+                    .datagrams
+                    .push(QuicTransmit::from_transmit(transmit, &buffer));
             }
             None => {}
         }
@@ -200,10 +205,9 @@ impl QuicNode {
                 let Some(transmit) = connection.poll_transmit(now, 1, &mut buffer) else {
                     break;
                 };
-                output.datagrams.push(QuicTransmit {
-                    destination: transmit.destination,
-                    payload: buffer[..transmit.size].to_vec(),
-                });
+                output
+                    .datagrams
+                    .push(QuicTransmit::from_transmit(transmit, &buffer));
             }
             while let Some(event) = connection.poll() {
                 match event {
@@ -230,6 +234,18 @@ impl QuicNode {
             self.connections.remove(&handle);
         }
         output.events.dedup();
+    }
+}
+
+impl QuicTransmit {
+    fn from_transmit(transmit: quinn_proto::Transmit, buffer: &[u8]) -> Self {
+        Self {
+            destination: transmit.destination,
+            source_ip: transmit.src_ip,
+            ecn: transmit.ecn,
+            segment_size: transmit.segment_size,
+            payload: buffer[..transmit.size].to_vec(),
+        }
     }
 }
 
@@ -376,9 +392,9 @@ mod tests {
             enqueue_output(&mut queue, 1, server_output);
             while let Some((destination, datagram)) = queue.pop_front() {
                 let output = if destination == 0 {
-                    server.receive(now, client_addr, None, &datagram.payload)
+                    server.receive(now, client_addr, None, None, &datagram.payload)
                 } else {
-                    client.receive(now, server_addr, None, &datagram.payload)
+                    client.receive(now, server_addr, None, None, &datagram.payload)
                 };
                 record_events(
                     &output.events,
