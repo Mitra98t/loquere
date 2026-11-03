@@ -1047,6 +1047,7 @@ Ogni contatto ha un **numero di sicurezza** (impronta delle due identità) confr
 ```sh
 loquere-cli id new --name "Alice"            # crea account (portachiavi o passphrase)
 loquere-cli id new --name "Alice" --output identity.loq # identità cifrata con passphrase chiesta senza eco
+loquere-cli id show --file identity.loq          # verifica e mostra i dati pubblici dell'account
 loquere-cli device link                       # su un nuovo dispositivo: mostra il codice da approvare
 loquere-cli device approve "TCL-…"            # su un dispositivo Admin: approva, mostra il codice di verifica
 loquere-cli device list

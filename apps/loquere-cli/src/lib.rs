@@ -2,7 +2,7 @@
 
 mod terminal;
 
-use loquere_identity::{Account, IdentityError, Invitation};
+use loquere_identity::{Account, DeviceRole, IdentityError, Invitation};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::net::IpAddr;
@@ -112,6 +112,61 @@ pub fn create_identity_file(
     Ok(account.account_id().to_base32())
 }
 
+/// Riepilogo pubblico di un'identità sbloccata e verificata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdentitySummary {
+    /// Identificatore pubblico dell'account.
+    pub account_id: String,
+    /// Identificatore pubblico del dispositivo corrente.
+    pub device_id: String,
+    /// Nome certificato del dispositivo.
+    pub device_name: String,
+    /// Ruolo firmato dal certificato.
+    pub role: DeviceRole,
+    /// Timestamp Unix di creazione del certificato.
+    pub created_at: u64,
+}
+
+/// Apre e verifica un'identità protetta da passphrase.
+pub fn inspect_identity_file(
+    path: impl AsRef<Path>,
+    passphrase: &str,
+) -> Result<IdentitySummary, IdentityFileError> {
+    let encoded = fs::read(path).map_err(IdentityFileError::Io)?;
+    let account = Account::unprotect_with_passphrase(&encoded, passphrase)
+        .map_err(IdentityFileError::Identity)?;
+    let certificate = account.device_cert();
+    certificate.verify().map_err(IdentityFileError::Identity)?;
+    Ok(IdentitySummary {
+        account_id: account.account_id().to_base32(),
+        device_id: encode_hex(&certificate.device_id().to_bytes()),
+        device_name: certificate.name().to_owned(),
+        role: certificate.role(),
+        created_at: certificate.created_at(),
+    })
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
+/// Formatta i dati pubblici di un'identità, senza accedere alle chiavi private.
+pub fn format_identity(summary: &IdentitySummary) -> String {
+    let role = match summary.role {
+        DeviceRole::Admin => "Admin",
+        DeviceRole::Member => "Member",
+    };
+    format!(
+        "Identità Loquere verificata\nAccount: {}\nDispositivo: {}\nID dispositivo: {}\nRuolo: {}\nCreato (Unix): {}",
+        summary.account_id, summary.device_name, summary.device_id, role, summary.created_at,
+    )
+}
+
 /// Chiede e conferma una passphrase senza mostrarla sul terminale.
 pub fn prompt_passphrase() -> Result<Zeroizing<String>, IdentityFileError> {
     let first = terminal::read_hidden("Passphrase: ").map_err(IdentityFileError::Io)?;
@@ -217,6 +272,10 @@ mod tests {
             );
         }
         assert_eq!(account_id.len(), 52);
+        let summary = inspect_identity_file(&path, "a strong passphrase").unwrap();
+        assert_eq!(summary.account_id, account_id);
+        assert_eq!(summary.device_name, "Portatile");
+        assert!(inspect_identity_file(&path, "wrong passphrase").is_err());
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

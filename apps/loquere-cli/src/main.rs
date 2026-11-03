@@ -12,6 +12,21 @@ fn main() -> ExitCode {
 
 fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     match (args.next().as_deref(), args.next().as_deref()) {
+        (Some("id"), Some("show")) => {
+            let option = args.next();
+            if option.as_deref() != Some("--file") {
+                return Err(usage());
+            }
+            let path = args.next().ok_or_else(usage)?;
+            if args.next().is_some() {
+                return Err(usage());
+            }
+            let passphrase = loquere_cli::prompt_passphrase().map_err(|error| error.to_string())?;
+            let summary = loquere_cli::inspect_identity_file(path, &passphrase)
+                .map_err(|error| error.to_string())?;
+            println!("{}", loquere_cli::format_identity(&summary));
+            Ok(())
+        }
         (Some("id"), Some("new")) => {
             let mut name = None;
             let mut output = None;
@@ -60,7 +75,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "uso: loquere-cli id new --name <nome-dispositivo> --output <file>\n     loquere-cli invite inspect <URI-o-codice-invito>\n     loquere-cli --help".to_owned()
+    "uso: loquere-cli id new --name <nome-dispositivo> --output <file>\n     loquere-cli id show --file <file>\n     loquere-cli invite inspect <URI-o-codice-invito>\n     loquere-cli --help".to_owned()
 }
 
 #[cfg(test)]
