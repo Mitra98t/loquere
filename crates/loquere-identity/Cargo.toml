@@ -8,3 +8,5 @@ rust-version.workspace = true
 
 [dependencies]
 loquere-crypto = { path = "../loquere-crypto" }
+rand_core.workspace = true
+zeroize.workspace = true

@@ -246,6 +246,8 @@ Profile {
 
 **D-21. Parametri passphrase.** L'envelope cifrato con passphrase usa Argon2id v1.3 con memoria 64 MiB, 3 passaggi, parallelismo 1 e output di 32 byte; salt casuale di 16 byte. I parametri sono fissi per la versione 1 dell'envelope, così l'apertura non dipende da valori forniti dal file. Il payload è poi cifrato con ChaCha20-Poly1305 e nonce casuale di 12 byte. Modifiche ai parametri richiedono una nuova versione dell'envelope.
 
+**D-22. File identità locale.** Il plaintext cifrato di `identity.tck` ha magic/versione `LOQID\x01\0\0`, poi chiave privata account (32 B), chiave privata dispositivo (32 B), segreto `D` (32 B), lunghezza del `DeviceCert` (u32 little-endian) e certificato. L'intero payload è cifrato con ChaCha20-Poly1305 usando `loquere:identity:v1` come dati associati. In apertura si verifica il certificato e che le due chiavi private corrispondano a identità e dispositivo certificati.
+
 ```
 DeviceCert {
   account_id,
@@ -1208,6 +1210,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Nomi di crate e binari | **tutto minuscolo** (`loquere-wire`, `loquere-cli`, schema `loquere://`); "Loquere" solo come nome del prodotto e della cartella dati | §5.2 |
 | Encoding di `DeviceCert` | binario canonico versionato e separato per dominio, senza crate di serializzazione | §6.4 (D-20) |
 | Parametri Argon2id | 64 MiB, 3 passaggi, parallelismo 1; versionati nell'envelope | §6.1 (D-21) |
+| Formato del payload `identity.tck` | payload binario versionato, autenticato con ChaCha20-Poly1305 | §16 (D-22) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

@@ -246,6 +246,8 @@ name = "loquere-identity"
 version = "0.1.0"
 dependencies = [
  "loquere-crypto",
+ "rand_core",
+ "zeroize",
 ]
 
 [[package]]

@@ -2,7 +2,9 @@
 
 //! Identità locale, account e certificati dei dispositivi.
 
-use loquere_crypto::{CryptoError, PublicKey, SecretKey, Signature};
+use loquere_crypto::{CryptoError, PublicKey, SealedBox, SecretKey, Signature};
+use rand_core::{OsRng, RngCore};
+use zeroize::Zeroizing;
 
 const DEVICE_CERT_DOMAIN: &[u8] = b"loquere:device-cert:v1\0";
 
@@ -246,6 +248,7 @@ fn take_array<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Result<[u8; N
 pub struct Account {
     account_key: SecretKey,
     device_key: SecretKey,
+    discovery_secret: Zeroizing<[u8; 32]>,
     device_cert: DeviceCert,
 }
 
@@ -257,6 +260,8 @@ impl Account {
     pub fn create(device_name: String, created_at: u64) -> Result<Self, IdentityError> {
         let account_key = SecretKey::generate();
         let device_key = SecretKey::generate();
+        let mut discovery_secret = Zeroizing::new([0u8; 32]);
+        OsRng.fill_bytes(&mut *discovery_secret);
         let device_cert = DeviceCert::issue(
             &account_key,
             device_key.public_key(),
@@ -267,6 +272,7 @@ impl Account {
         Ok(Self {
             account_key,
             device_key,
+            discovery_secret,
             device_cert,
         })
     }
@@ -289,6 +295,67 @@ impl Account {
     /// Firma un contenuto con la chiave dell'account.
     pub fn sign_as_account(&self, message: &[u8]) -> Signature {
         self.account_key.sign(message)
+    }
+
+    /// Segreto di scoperta dell'account (32 byte).
+    pub fn discovery_secret(&self) -> &[u8; 32] {
+        &self.discovery_secret
+    }
+
+    /// Serializza e cifra l'identità usando la chiave master `MK`.
+    pub fn seal(&self, master_key: &[u8; 32]) -> Result<Vec<u8>, IdentityError> {
+        let plaintext = self.encode_secret_state()?;
+        let sealed = SealedBox::seal(master_key, &plaintext, b"loquere:identity:v1")?;
+        Ok(sealed.to_bytes())
+    }
+
+    /// Apre un'identità cifrata e verifica la corrispondenza tra chiavi e certificato.
+    pub fn open(encoded: &[u8], master_key: &[u8; 32]) -> Result<Self, IdentityError> {
+        let sealed = SealedBox::from_bytes(encoded)?;
+        let plaintext = sealed.open(master_key, b"loquere:identity:v1")?;
+        Self::decode_secret_state(&plaintext)
+    }
+
+    fn encode_secret_state(&self) -> Result<Zeroizing<Vec<u8>>, IdentityError> {
+        let cert = self.device_cert.to_bytes();
+        let cert_len = u32::try_from(cert.len()).map_err(|_| IdentityError::InvalidEncoding)?;
+        let account_key = self.account_key.to_bytes();
+        let device_key = self.device_key.to_bytes();
+        let mut bytes = Zeroizing::new(Vec::with_capacity(8 + 32 * 3 + 4 + cert.len()));
+        bytes.extend_from_slice(b"LOQID\x01\0\0");
+        bytes.extend_from_slice(&*account_key);
+        bytes.extend_from_slice(&*device_key);
+        bytes.extend_from_slice(&*self.discovery_secret);
+        bytes.extend_from_slice(&cert_len.to_le_bytes());
+        bytes.extend_from_slice(&cert);
+        Ok(bytes)
+    }
+
+    fn decode_secret_state(bytes: &[u8]) -> Result<Self, IdentityError> {
+        if bytes.len() < 8 + 32 * 3 + 4 || &bytes[..8] != b"LOQID\x01\0\0" {
+            return Err(IdentityError::InvalidEncoding);
+        }
+        let mut cursor = 8;
+        let account_key = SecretKey::from_bytes(take_array(bytes, &mut cursor)?);
+        let device_key = SecretKey::from_bytes(take_array(bytes, &mut cursor)?);
+        let discovery_secret = Zeroizing::new(take_array(bytes, &mut cursor)?);
+        let cert_len = u32::from_le_bytes(take_array(bytes, &mut cursor)?) as usize;
+        if bytes.len() != cursor + cert_len {
+            return Err(IdentityError::InvalidEncoding);
+        }
+        let device_cert = DeviceCert::from_bytes(&bytes[cursor..])?;
+        if device_cert.account_id() != AccountId(account_key.public_key().to_bytes())
+            || device_cert.device_id() != device_key.public_key()
+            || device_cert.role() != DeviceRole::Admin
+        {
+            return Err(IdentityError::KeyMismatch);
+        }
+        Ok(Self {
+            account_key,
+            device_key,
+            discovery_secret,
+            device_cert,
+        })
     }
 }
 
@@ -326,6 +393,8 @@ pub enum IdentityError {
     InvalidRole,
     /// Codifica troncata, non canonica o malformata.
     InvalidEncoding,
+    /// Chiavi private non corrispondenti al certificato dell'identità.
+    KeyMismatch,
     /// Errore proveniente dalla verifica della chiave o della firma.
     Crypto(CryptoError),
 }
@@ -342,6 +411,7 @@ impl core::fmt::Display for IdentityError {
             Self::InvalidName => formatter.write_str("nome dispositivo non valido"),
             Self::InvalidRole => formatter.write_str("ruolo dispositivo non valido"),
             Self::InvalidEncoding => formatter.write_str("codifica DeviceCert non valida"),
+            Self::KeyMismatch => formatter.write_str("chiavi non corrispondenti all'identità"),
             Self::Crypto(error) => error.fmt(formatter),
         }
     }
@@ -494,5 +564,40 @@ mod tests {
             account_id.to_base32(),
             "25NJQAMCWEFLPVKL73J4SZAHHIHOC4XT3KTCGJNPAINGR5YHKENA"
         );
+    }
+
+    #[test]
+    fn account_identity_round_trips_through_encrypted_file() {
+        let account = Account::create("PC casa".to_owned(), 500).unwrap();
+        let id = account.account_id();
+        let device = account.device_public_key();
+        let discovery = *account.discovery_secret();
+        let master_key = [0x42; 32];
+        let encrypted = account.seal(&master_key).unwrap();
+        let restored = Account::open(&encrypted, &master_key).unwrap();
+
+        assert_eq!(restored.account_id(), id);
+        assert_eq!(restored.device_public_key(), device);
+        assert_eq!(*restored.discovery_secret(), discovery);
+        assert_eq!(restored.device_cert().verify(), Ok(()));
+        assert_eq!(
+            restored.sign_as_account(b"test"),
+            account.sign_as_account(b"test")
+        );
+    }
+
+    #[test]
+    fn encrypted_identity_rejects_wrong_master_key_and_tampering() {
+        let account = Account::create("PC".to_owned(), 500).unwrap();
+        let master_key = [0x24; 32];
+        let mut encrypted = account.seal(&master_key).unwrap();
+
+        assert!(matches!(
+            Account::open(&encrypted, &[0x25; 32]),
+            Err(IdentityError::Crypto(CryptoError::AuthenticationFailed))
+        ));
+        let last = encrypted.len() - 1;
+        encrypted[last] ^= 1;
+        assert!(Account::open(&encrypted, &master_key).is_err());
     }
 }
