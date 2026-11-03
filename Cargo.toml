@@ -5,6 +5,7 @@ members = [
     "crates/loquere-identity",
     "crates/loquere-store",
     "crates/loquere-wire",
+    "crates/loquere-sim",
 ]
 
 [workspace.package]

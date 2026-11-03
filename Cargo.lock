@@ -251,6 +251,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "loquere-sim"
+version = "0.1.0"
+
+[[package]]
 name = "loquere-store"
 version = "0.1.0"
 dependencies = [

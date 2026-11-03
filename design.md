@@ -959,6 +959,8 @@ Loquere/
 
 **D-26. Prefisso del filtro silenzioso.** Il timestamp sul filo è u64 big-endian; MAC BLAKE2s keyed a 16 byte su `timestamp ‖ pacchetto QUIC`, con chiave derivata `BLAKE2s("loquere-gate" ‖ device_id)`. Il MAC si confronta in tempo costante. Il filtro conserva per sorgente le coppie timestamp/MAC già viste entro la finestra di 120 s; i limiti sono 1024 sorgenti e 4096 pacchetti validi per sorgente.
 
+**D-27. Simulatore deterministico.** `loquere-sim` usa un generatore SplitMix64 con seed esplicito (solo test, mai per segreti) e link diretti configurabili con latenza, jitter uniforme, perdita, banda e partizioni. Pacchetti consegnati sono ordinati per tempo e sequenza di invio; nessun socket o clock di sistema.
+
 ---
 
 ## 17. Sicurezza e privacy
@@ -1224,6 +1226,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Payload invito verificabile | include `DeviceCert` completo; firma DK domain-separated e Base32 RFC 4648 | §7.1 (D-24) |
 | Framing append-only locale | lunghezza u32 LE + envelope AEAD; sequenza autenticata; limite 16 MiB | §16 (D-25) |
 | Prefisso filtro silenzioso | timestamp BE, BLAKE2s-MAC a 16 byte, anti-replay per sorgente | §8.3 (D-26) |
+| Simulatore | SplitMix64 deterministico per seed, link con latenza/jitter/perdita/banda/partizioni | §22 (D-27) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

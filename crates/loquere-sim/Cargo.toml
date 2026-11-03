@@ -1,0 +1,10 @@
+[package]
+name = "loquere-sim"
+description = "Simulatore deterministico di rete per Loquere"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
