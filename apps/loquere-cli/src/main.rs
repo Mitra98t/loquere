@@ -62,10 +62,18 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             let mut name = None;
             let mut expires_in = None;
             let mut state_file = None;
+            let mut candidates = Vec::new();
             while let Some(option) = args.next() {
                 let value = args
                     .next()
                     .ok_or_else(|| format!("valore mancante per {option}\n{}", usage()))?;
+                if option == "--candidate" {
+                    if candidates.len() == 4 {
+                        return Err("massimo quattro candidati".to_owned());
+                    }
+                    candidates.push(parse_invite_candidate(&value)?);
+                    continue;
+                }
                 let slot = match option.as_str() {
                     "--file" => &mut file,
                     "--name" => &mut name,
@@ -89,6 +97,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
                 .checked_add(duration)
                 .and_then(|timestamp| u32::try_from(timestamp).ok())
                 .ok_or_else(|| "scadenza oltre il limite rappresentabile".to_owned())?;
+            let contains_address = !candidates.is_empty();
             let passphrase = loquere_cli::prompt_passphrase().map_err(|error| error.to_string())?;
             let code = loquere_cli::create_persistent_invite_from_file(
                 file,
@@ -96,7 +105,13 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
                 name,
                 expires_at,
                 state_file,
+                candidates,
             )?;
+            if contains_address {
+                eprintln!(
+                    "Attenzione: l'invito contiene indirizzi IP visibili a chi riceve il link."
+                );
+            }
             println!("{code}");
             Ok(())
         }
@@ -282,6 +297,23 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     }
 }
 
+fn parse_invite_candidate(value: &str) -> Result<loquere_identity::InviteCandidate, String> {
+    let addr: std::net::SocketAddr = value
+        .parse()
+        .map_err(|_| "candidato non valido: usa IP:porta o [IPv6]:porta".to_owned())?;
+    if addr.port() == 0
+        || addr.ip().is_unspecified()
+        || addr.ip().is_multicast()
+        || matches!(addr, std::net::SocketAddr::V6(v6) if v6.scope_id() != 0 || v6.flowinfo() != 0 || v6.ip().is_unicast_link_local())
+    {
+        return Err("candidato non utilizzabile nell'invito".to_owned());
+    }
+    Ok(loquere_identity::InviteCandidate {
+        address: addr.ip(),
+        port: addr.port(),
+    })
+}
+
 fn parse_chat_paths(args: impl Iterator<Item = String>) -> Result<(String, String), String> {
     let options = parse_chat_options(args, &["--identity-file", "--state-file"])?;
     Ok((
@@ -334,7 +366,7 @@ fn write_new_file(path: &str, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "uso: loquere-cli id new --name <nome-dispositivo> --output <file>\n     loquere-cli id show --file <file>\n     loquere-cli invite create --file <file> --name <nome> --state-file <file> [--expires-in 7d]\n     loquere-cli invite inspect <URI-o-codice-invito>\n     loquere-cli invite revoke --file <file> --state-file <file>\n     loquere-cli chat init --identity-file <file> --state-file <file>\n     loquere-cli chat show --identity-file <file> --state-file <file>\n     loquere-cli chat key-package --identity-file <file> --state-file <file> --output <file>\n     loquere-cli chat add-member --identity-file <file> --state-file <file> --key-package <file> --welcome-out <file> --tree-out <file> --commit-out <file>\n     loquere-cli chat join --identity-file <file> --state-file <file> --welcome <file> --tree <file>\n     loquere-cli chat apply-commit --identity-file <file> --state-file <file> --commit <file>\n     loquere-cli chat send --identity-file <file> --state-file <file> --message <testo> --output <file>\n     loquere-cli chat receive --identity-file <file> --state-file <file> --input <file>\n     loquere-cli --help".to_owned()
+    "uso: loquere-cli id new --name <nome-dispositivo> --output <file>\n     loquere-cli id show --file <file>\n     loquere-cli invite create --file <file> --name <nome> --state-file <file> [--expires-in 7d] [--candidate <IP:porta>]...\n     loquere-cli invite inspect <URI-o-codice-invito>\n     loquere-cli invite revoke --file <file> --state-file <file>\n     loquere-cli chat init --identity-file <file> --state-file <file>\n     loquere-cli chat show --identity-file <file> --state-file <file>\n     loquere-cli chat key-package --identity-file <file> --state-file <file> --output <file>\n     loquere-cli chat add-member --identity-file <file> --state-file <file> --key-package <file> --welcome-out <file> --tree-out <file> --commit-out <file>\n     loquere-cli chat join --identity-file <file> --state-file <file> --welcome <file> --tree <file>\n     loquere-cli chat apply-commit --identity-file <file> --state-file <file> --commit <file>\n     loquere-cli chat send --identity-file <file> --state-file <file> --message <testo> --output <file>\n     loquere-cli chat receive --identity-file <file> --state-file <file> --input <file>\n     loquere-cli --help".to_owned()
 }
 
 fn parse_duration(value: &str) -> Result<u64, String> {
@@ -410,5 +442,17 @@ mod tests {
         assert!(parse_duration("0s").is_err());
         assert!(parse_duration("999999999999999999999w").is_err());
         assert!(parse_duration("5months").is_err());
+    }
+
+    #[test]
+    fn parses_explicit_invite_candidates() {
+        assert_eq!(parse_invite_candidate("192.0.2.1:4444").unwrap().port, 4444);
+        assert_eq!(
+            parse_invite_candidate("[2001:db8::1]:443").unwrap().port,
+            443
+        );
+        assert!(parse_invite_candidate("0.0.0.0:1234").is_err());
+        assert!(parse_invite_candidate("127.0.0.1:0").is_err());
+        assert!(parse_invite_candidate("example.com:1234").is_err());
     }
 }

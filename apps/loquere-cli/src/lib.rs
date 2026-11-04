@@ -326,6 +326,7 @@ pub fn create_persistent_invite_from_file(
     display_name: String,
     expires_at: u32,
     state_path: impl AsRef<Path>,
+    candidates: Vec<loquere_identity::InviteCandidate>,
 ) -> Result<String, String> {
     let account = unlock_identity_file(path, passphrase).map_err(|error| error.to_string())?;
     let invite = account
@@ -336,7 +337,7 @@ pub fn create_persistent_invite_from_file(
                 single_use: true,
                 auto_accept: false,
             },
-            Vec::new(),
+            candidates,
         )
         .map_err(|error| error.to_string())?;
     let uri = invite.to_uri().map_err(|error| error.to_string())?;
@@ -559,18 +560,24 @@ mod tests {
             "Alice".to_owned(),
             99,
             &state_path,
+            vec![loquere_identity::InviteCandidate {
+                address: "192.0.2.1".parse().unwrap(),
+                port: 4444,
+            }],
         )
         .unwrap();
         let expected = Invitation::parse_code(&code).unwrap();
         let (_, restored) = PersistentInviteGrant::load(&state_path, &account).unwrap();
         assert_eq!(restored, expected);
+        assert_eq!(restored.candidates()[0].port, 4444);
         assert!(
             create_persistent_invite_from_file(
                 &path,
                 "a strong passphrase",
                 "Alice".to_owned(),
                 99,
-                &state_path
+                &state_path,
+                vec![]
             )
             .is_err()
         );
