@@ -753,6 +753,7 @@ mod tests {
         );
         let mut incoming = None;
         let mut session = loquere_wire::ProvisionalSession::new();
+        let mut event_guard = loquere_wire::ProvisionalEventGuard::new(server_handle);
         let mut received = false;
         for tick in 100..200 {
             let now = start + Duration::from_millis(tick * 10);
@@ -770,18 +771,21 @@ mod tests {
                         .send(transmit, Some((inviter_id, &token)), 1_000_000)
                         .unwrap();
                 }
-                if output.events.iter().any(|event| {
-                    matches!(
-                        event,
-                        loquere_wire::QuicEvent::Stream {
-                            event: quinn_proto::StreamEvent::Opened {
-                                dir: quinn_proto::Dir::Bi
-                            },
-                            ..
+                for event in &output.events {
+                    if event_guard.inspect(event).unwrap()
+                        == loquere_wire::ProvisionalAction::AcceptStream
+                    {
+                        loop {
+                            match server.node_mut().accept_bi_stream(server_handle) {
+                                Ok(stream) => {
+                                    event_guard.accept_stream(stream).unwrap();
+                                    incoming = Some(stream);
+                                }
+                                Err(loquere_wire::QuicStreamError::NoIncomingStream) => break,
+                                Err(error) => panic!("stream non valido: {error:?}"),
+                            }
                         }
-                    )
-                }) {
-                    incoming = Some(server.node_mut().accept_bi_stream(server_handle).unwrap());
+                    }
                 }
             }
             if let Some(stream) = incoming {
@@ -793,6 +797,12 @@ mod tests {
                     server
                         .send(transmit, Some((inviter_id, &token)), 1_000_000)
                         .unwrap();
+                }
+                for event in &output.events {
+                    assert_ne!(
+                        event_guard.inspect(event).unwrap(),
+                        loquere_wire::ProvisionalAction::AcceptStream
+                    );
                 }
                 if let Some(request) = session.receive_control(&read.bytes).unwrap() {
                     assert_eq!(request.token(), &token);

@@ -1,6 +1,7 @@
 //! Limitazione sans-IO di una sessione iniziale qualificata dal gate (D-45).
 
-use crate::{FrameError, FriendRequest, FriendRequestDecoder};
+use crate::{FrameError, FriendRequest, FriendRequestDecoder, QuicEvent};
+use quinn_proto::{ConnectionHandle, Dir, Side, StreamEvent, StreamId};
 
 /// Violazione del protocollo o fase non corretta; chiudere la connessione.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -9,6 +10,81 @@ pub enum ProvisionalError {
     InvalidRequest(FrameError),
     /// Azione non ammessa nella fase corrente.
     UnexpectedAction,
+}
+
+/// Operazione QUIC richiesta dopo l'ispezione di un evento provvisorio.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProvisionalAction {
+    /// Nessuna operazione applicativa richiesta.
+    None,
+    /// Accettare lo stream bidirezionale e verificare con `accept_stream`.
+    AcceptStream,
+    /// Leggere lo stream di controllo e passare i byte a `receive_control`.
+    ReadControl(StreamId),
+}
+
+/// Associa gli eventi QUIC di un'unica connessione allo stream di controllo 0.
+/// Il driver deve esaminare ogni evento, svuotare tutti gli stream accettabili
+/// dopo `AcceptStream` e interrompere la connessione su qualsiasi errore.
+pub struct ProvisionalEventGuard {
+    connection: ConnectionHandle,
+    control_accepted: bool,
+    closed: bool,
+}
+
+impl ProvisionalEventGuard {
+    /// Associa un guard a una connessione qualificata dal gate d'invito.
+    pub fn new(connection: ConnectionHandle) -> Self {
+        Self {
+            connection,
+            control_accepted: false,
+            closed: false,
+        }
+    }
+
+    /// Controlla un evento QUIC prima di qualsiasi elaborazione applicativa.
+    pub fn inspect(&mut self, event: &QuicEvent) -> Result<ProvisionalAction, ProvisionalError> {
+        if self.closed {
+            return Err(ProvisionalError::UnexpectedAction);
+        }
+        let control = StreamId::new(Side::Client, Dir::Bi, 0);
+        match event {
+            QuicEvent::Connected(handle) if *handle == self.connection => {
+                Ok(ProvisionalAction::None)
+            }
+            QuicEvent::Stream { connection, event } if *connection == self.connection => {
+                match event {
+                    StreamEvent::Opened { dir: Dir::Bi } => Ok(ProvisionalAction::AcceptStream),
+                    StreamEvent::Readable { id } if *id == control && self.control_accepted => {
+                        Ok(ProvisionalAction::ReadControl(*id))
+                    }
+                    StreamEvent::Writable { id } if *id == control && self.control_accepted => {
+                        Ok(ProvisionalAction::None)
+                    }
+                    StreamEvent::Available { .. } => Ok(ProvisionalAction::None),
+                    _ => self.fail(),
+                }
+            }
+            QuicEvent::DatagramsUnblocked(handle) if *handle == self.connection => {
+                Ok(ProvisionalAction::None)
+            }
+            _ => self.fail(),
+        }
+    }
+
+    /// Valida ogni stream restituito da `accept_bi_stream`; ne è ammesso uno solo.
+    pub fn accept_stream(&mut self, id: StreamId) -> Result<(), ProvisionalError> {
+        if self.closed || self.control_accepted || id != StreamId::new(Side::Client, Dir::Bi, 0) {
+            return self.fail();
+        }
+        self.control_accepted = true;
+        Ok(())
+    }
+
+    fn fail<T>(&mut self) -> Result<T, ProvisionalError> {
+        self.closed = true;
+        Err(ProvisionalError::UnexpectedAction)
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -129,5 +205,49 @@ mod tests {
         let mut session = ProvisionalSession::new();
         assert!(session.reject_unexpected_activity().is_err());
         assert!(session.receive_control(&[]).is_err());
+    }
+
+    #[test]
+    fn event_guard_rejects_extra_streams_datagrams_and_other_connections() {
+        let handle = ConnectionHandle(5);
+        let stream = StreamId::new(Side::Client, Dir::Bi, 0);
+        let mut guard = ProvisionalEventGuard::new(handle);
+        assert_eq!(
+            guard.inspect(&QuicEvent::Stream {
+                connection: handle,
+                event: StreamEvent::Opened { dir: Dir::Bi }
+            }),
+            Ok(ProvisionalAction::AcceptStream)
+        );
+        assert_eq!(guard.accept_stream(stream), Ok(()));
+        assert_eq!(
+            guard.inspect(&QuicEvent::Stream {
+                connection: handle,
+                event: StreamEvent::Readable { id: stream }
+            }),
+            Ok(ProvisionalAction::ReadControl(stream))
+        );
+        assert_eq!(
+            guard.accept_stream(StreamId::new(Side::Client, Dir::Bi, 1)),
+            Err(ProvisionalError::UnexpectedAction)
+        );
+        assert!(guard.inspect(&QuicEvent::Connected(handle)).is_err());
+        let mut guard = ProvisionalEventGuard::new(handle);
+        assert!(guard.inspect(&QuicEvent::DatagramReceived(handle)).is_err());
+        let mut guard = ProvisionalEventGuard::new(handle);
+        assert!(
+            guard
+                .inspect(&QuicEvent::Connected(ConnectionHandle(6)))
+                .is_err()
+        );
+        let mut guard = ProvisionalEventGuard::new(handle);
+        assert!(
+            guard
+                .inspect(&QuicEvent::Stream {
+                    connection: handle,
+                    event: StreamEvent::Opened { dir: Dir::Uni }
+                })
+                .is_err()
+        );
     }
 }

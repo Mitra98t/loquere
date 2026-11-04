@@ -24,7 +24,9 @@ pub use gate::{
     is_quic_initial_packet,
 };
 pub use invite_grant::{InviteGrant, InviteGrantError};
-pub use provisional::{ProvisionalError, ProvisionalSession};
+pub use provisional::{
+    ProvisionalAction, ProvisionalError, ProvisionalEventGuard, ProvisionalSession,
+};
 pub use quic_config::{
     QuicConfigError, build_provisional_invite_quic_server_config, build_quic_client_config,
     build_quic_server_config,
