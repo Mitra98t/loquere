@@ -756,8 +756,81 @@ mod tests {
             Some(client_device)
         );
 
-        // Dopo l'handshake, scambia un frame applicativo su uno stream QUIC
-        // bidirezionale reale, mantenendo il prefisso del gate sui datagrammi.
+        // Il primo stream bidirezionale trasporta Hello prima dello stream chat.
+        // La lista amici non esiste ancora: qui i dispositivi sono preautorizzati
+        // dalla configurazione TLS e dal segreto gate del test.
+        let control = client.node_mut().open_bi_stream(client_handle).unwrap();
+        let hello = loquere_wire::encode_control_hello();
+        assert_eq!(
+            client
+                .node_mut()
+                .write_stream(client_handle, control, &hello)
+                .unwrap(),
+            hello.len()
+        );
+        let mut incoming_control = None;
+        let mut hello_decoder = loquere_wire::ControlHelloDecoder::new();
+        let mut hello_received = false;
+        for tick in 100..200 {
+            let now = start + Duration::from_millis(tick * 10);
+            for transmit in client.poll(now).datagrams {
+                client
+                    .send(&transmit, Some((server_device, &shared_secret)), 1_000_000)
+                    .unwrap();
+            }
+            if let Some(output) = server
+                .receive_once(&mut server_buffer, now, 1_000_000)
+                .unwrap()
+            {
+                for transmit in &output.datagrams {
+                    server
+                        .send(transmit, Some((client_device, &shared_secret)), 1_000_000)
+                        .unwrap();
+                }
+                if output.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        loquere_wire::QuicEvent::Stream {
+                            event: quinn_proto::StreamEvent::Opened {
+                                dir: quinn_proto::Dir::Bi
+                            },
+                            ..
+                        }
+                    )
+                }) {
+                    incoming_control = Some(
+                        server
+                            .node_mut()
+                            .accept_bi_stream(server_handle.unwrap())
+                            .unwrap(),
+                    );
+                }
+            }
+            if let Some(incoming) = incoming_control {
+                let (read, output) = server
+                    .node_mut()
+                    .read_stream(now, server_handle.unwrap(), incoming, MAX_UDP_PAYLOAD)
+                    .unwrap();
+                for transmit in &output.datagrams {
+                    server
+                        .send(transmit, Some((client_device, &shared_secret)), 1_000_000)
+                        .unwrap();
+                }
+                let (used, complete) = hello_decoder.push(&read.bytes).unwrap();
+                assert_eq!(used, read.bytes.len());
+                if complete {
+                    hello_received = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            hello_received,
+            "Hello non ricevuto sullo stream di controllo"
+        );
+        hello_decoder.finish().unwrap();
+
+        // Poi scambia un frame MLS su uno stream chat dedicato.
         let stream = client.node_mut().open_bi_stream(client_handle).unwrap();
         let plaintext = b"ciao da OpenMLS su QUIC";
         let ciphertext = alice.encrypt(plaintext).unwrap();
@@ -780,7 +853,7 @@ mod tests {
         let mut incoming_stream = None;
         let mut received_bytes = Vec::new();
         let mut trace = Vec::new();
-        for tick in 100..200 {
+        for tick in 200..300 {
             let now = start + Duration::from_millis(tick * 10);
             let client_output = client.poll(now);
             trace.push(format!(
