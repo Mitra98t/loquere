@@ -3,8 +3,8 @@
 //! Filtro dei datagrammi UDP prima del driver QUIC.
 
 use loquere_wire::{
-    GateDecision, GateError, QuicNode, QuicTransmit, SilentFilter, gate_initial_datagram,
-    gate_key_id_for, is_quic_initial_packet,
+    GateDecision, GateError, QuicNode, QuicOutput, QuicTransmit, SilentFilter,
+    gate_initial_datagram, gate_key_id_for, is_quic_initial_packet,
 };
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
@@ -17,6 +17,15 @@ use std::time::Duration;
 /// falliscono esplicitamente finché non sarà aggiunto il backend OS dedicato.
 pub struct UdpSocketAdapter {
     socket: UdpSocket,
+}
+
+/// Collegamento tra socket, filtro d'ingresso e macchina QUIC sans-IO.
+/// L'istanza va posseduta dal solo thread `net`; l'engine interagisce con
+/// [`Self::node_mut`] e consegna al socket i datagrammi prodotti.
+pub struct UdpQuicEndpoint {
+    socket: UdpSocketAdapter,
+    ingress: UdpIngressFilter,
+    node: QuicNode,
 }
 
 /// Datagramma ricevuto dalla socket, senza interpretazione del payload.
@@ -41,6 +50,8 @@ pub enum UdpSocketError {
     InitialRequiresGate,
     /// Datagramma più grande del massimo payload UDP IP consentito.
     DatagramTooLarge,
+    /// Il buffer di ricezione può troncare un datagramma UDP valido.
+    ReceiveBufferTooSmall,
 }
 
 impl UdpSocketAdapter {
@@ -131,6 +142,98 @@ impl UdpSocketAdapter {
     }
 }
 
+impl UdpQuicEndpoint {
+    /// Collega i tre componenti senza trasferire ownership del clock o del
+    /// thread: il chiamante resta responsabile di invocare poll e timer.
+    pub fn new(socket: UdpSocketAdapter, ingress: UdpIngressFilter, node: QuicNode) -> Self {
+        Self {
+            socket,
+            ingress,
+            node,
+        }
+    }
+
+    /// Riceve un datagramma, lo filtra e, solo se autorizzato, lo passa a QUIC.
+    /// `None` indica timeout o pacchetto silenziosamente scartato.
+    pub fn receive_once(
+        &mut self,
+        buffer: &mut [u8],
+        now: std::time::Instant,
+        now_unix_seconds: u64,
+    ) -> Result<Option<QuicOutput>, UdpSocketError> {
+        if buffer.len() < MAX_UDP_PAYLOAD {
+            return Err(UdpSocketError::ReceiveBufferTooSmall);
+        }
+        let received = match self.socket.receive(buffer) {
+            Ok(received) => received,
+            Err(UdpSocketError::Io(error))
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let datagram = &buffer[..received.length];
+        let Some(accepted) =
+            self.ingress
+                .inspect(&self.node, received.source, datagram, now_unix_seconds)
+        else {
+            return Ok(None);
+        };
+        let local_ip = self.socket.local_addr()?.ip();
+        Ok(Some(self.node.receive(
+            now,
+            received.source,
+            Some(local_ip),
+            None,
+            accepted.gate_key_id,
+            accepted.packet,
+        )))
+    }
+
+    /// Fa avanzare timer e trasmissioni sans-IO di Quinn.
+    pub fn poll(&mut self, now: std::time::Instant) -> QuicOutput {
+        self.node.poll(now)
+    }
+
+    /// Invia un pacchetto prodotto da Quinn, applicando il gate agli Initial.
+    pub fn send(
+        &self,
+        transmit: &QuicTransmit,
+        gate_peer: Option<([u8; 32], &[u8])>,
+        now_unix_seconds: u64,
+    ) -> Result<usize, UdpSocketError> {
+        if is_quic_initial_packet(&transmit.payload) {
+            let (recipient_device_id, secret) =
+                gate_peer.ok_or(UdpSocketError::InitialRequiresGate)?;
+            self.socket
+                .send_gate_initial(transmit, recipient_device_id, secret, now_unix_seconds)
+        } else {
+            self.socket.send(transmit)
+        }
+    }
+
+    /// Accesso alla macchina QUIC per connect, stream, datagrammi e stato.
+    pub fn node_mut(&mut self) -> &mut QuicNode {
+        &mut self.node
+    }
+
+    /// Registra un segreto peer nel filtro d'ingresso.
+    pub fn authorize_secret(&mut self, secret: &[u8]) -> Result<[u8; 16], GateError> {
+        self.ingress.authorize_secret(secret)
+    }
+
+    /// Indirizzo locale effettivo del socket.
+    pub fn local_addr(&self) -> Result<SocketAddr, UdpSocketError> {
+        self.socket.local_addr()
+    }
+}
+
+const MAX_UDP_PAYLOAD: usize = 65_507;
+
 impl std::fmt::Display for UdpSocketError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -143,6 +246,9 @@ impl std::fmt::Display for UdpSocketError {
                 formatter.write_str("un QUIC Initial richiede il prefisso gate autenticato")
             }
             Self::DatagramTooLarge => formatter.write_str("datagramma UDP troppo grande"),
+            Self::ReceiveBufferTooSmall => {
+                formatter.write_str("buffer troppo piccolo per ricevere UDP senza troncamenti")
+            }
         }
     }
 }
@@ -410,5 +516,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(accepted.packet, payload);
+    }
+
+    #[test]
+    fn combined_endpoint_drops_unauthorized_packets_and_handles_timeouts() {
+        let socket = UdpSocketAdapter::bind(
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            Duration::from_millis(5),
+        )
+        .unwrap();
+        let ingress = UdpIngressFilter::new([0x44; 32]);
+        let mut endpoint = UdpQuicEndpoint::new(socket, ingress, QuicNode::client([0x11; 32]));
+        let now = std::time::Instant::now();
+        assert!(matches!(
+            endpoint.receive_once(&mut [0; MAX_UDP_PAYLOAD], now, 1000),
+            Ok(None)
+        ));
+        assert!(matches!(
+            endpoint.receive_once(&mut [0; 32], now, 1000),
+            Err(UdpSocketError::ReceiveBufferTooSmall)
+        ));
     }
 }

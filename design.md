@@ -975,6 +975,8 @@ Loquere/
 
 **D-34. Adapter UDP portabile iniziale.** `UdpSocketAdapter` usa `std::net::UdpSocket` bloccante, buffer ricezione del chiamante e timeout configurabile nel thread `net`. Initial QUIC non possono essere inviati senza prefisso: `send_gate_initial` verifica il key ID e applica il MAC; gli altri pacchetti usano `send`. ECN, GSO o override IP sorgente non applicabile sono errori espliciti, mai ignorati. Un backend OS-specifico potrà aggiungere queste ottimizzazioni senza cambiare il filtro sans-IO.
 
+**D-35. Composizione rete–QUIC.** `UdpQuicEndpoint` possiede adapter, filtro ingressi e `QuicNode` in un unico oggetto da assegnare al thread `net`; espone ricezione filtrata, `poll` dei timer, accesso alla macchina QUIC e invio con prefisso autenticato sugli Initial. Il chiamante continua a governare il clock e lo scheduling, così il protocollo resta testabile sans-IO.
+
 ---
 
 ## 17. Sicurezza e privacy
@@ -1251,6 +1253,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Gate pre-autenticazione | Token invito/segreto peer + HKDF destinatario; key ID opaco, non chiave pubblica | §8.3 (D-32) |
 | Demultiplexing ingresso UDP | Initial identificato dopo il prefisso; altri pacchetti richiedono CID locale autenticato | §8.3 (D-33) |
 | Adapter UDP | Socket bloccanti `std`, due famiglie bindate separatamente; metadati non applicabili rifiutati esplicitamente | §9.2 (D-34) |
+| Composizione socket e QUIC | `UdpQuicEndpoint` nel thread `net`; clock e scheduling al chiamante | §5.4, §9.2 (D-35) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 
