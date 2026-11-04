@@ -220,6 +220,37 @@ mod tests {
     }
 
     #[test]
+    fn storage_keys_are_domain_separated_and_survive_identity_unlock() {
+        let account = Account::create("Dispositivo".to_owned(), 1000).unwrap();
+        let first = account
+            .derive_storage_key(b"loquere:mls:conversation-a:v1")
+            .unwrap();
+        let other = account
+            .derive_storage_key(b"loquere:mls:conversation-b:v1")
+            .unwrap();
+        assert_ne!(*first, *other);
+
+        let protected = account
+            .protect_with_passphrase("corretta cavallo batteria")
+            .unwrap();
+        let restored =
+            Account::unprotect_with_passphrase(&protected, "corretta cavallo batteria").unwrap();
+        assert_eq!(
+            *restored
+                .derive_storage_key(b"loquere:mls:conversation-a:v1")
+                .unwrap(),
+            *first
+        );
+        assert_eq!(
+            restored.device_public_key().to_bytes(),
+            loquere_crypto::SecretKey::from_bytes(*restored.device_signing_key())
+                .public_key()
+                .to_bytes()
+        );
+        assert!(restored.derive_storage_key(b"").is_err());
+    }
+
+    #[test]
     fn invite_is_signed_and_round_trips_as_uri_and_text_code() {
         let account = Account::create("PC Alice".to_owned(), 100).unwrap();
         let invite = account

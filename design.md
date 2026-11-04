@@ -983,6 +983,8 @@ Loquere/
 
 **D-38. Snapshot MLS cifrati.** Lo stato del key store OpenMLS e l'identificatore del gruppo vengono salvati insieme come snapshot nel log append-only cifrato di `loquere-store`; ad ogni operazione che può mutare lo stato si accoda uno snapshot completo, e al riavvio si ripristina l'ultimo snapshot autenticato prima di caricare il gruppo con OpenMLS. Buffer snapshot e valori del key store in memoria vengono azzerati al rilascio. Dopo 64 snapshot il log viene riscritto atomicamente con il solo snapshot più recente; la sostituzione usa un file temporaneo sincronizzato, così un'interruzione prima della rinomina conserva il log precedente. La chiave del log è fornita dal livello identità (derivata dal master key locale), non viene generata né salvata da `loquere-chat`; i file nuovi sono creati con permessi `0600` sui sistemi Unix.
 
+**D-39. Chiavi di storage per scopo.** L'identità conserva in memoria il master key casuale già usato per proteggere il file identità. `Account::derive_storage_key` produce chiavi indipendenti con HKDF-SHA256, salt `loquere:storage-key:v1` e un'etichetta di scopo stabile; il master key non viene esportato. La chiave dei log MLS è così riproducibile dopo lo sblocco dell'identità, senza riutilizzare la chiave Ed25519 o il segreto di scoperta.
+
 ---
 
 ## 17. Sicurezza e privacy
@@ -1264,7 +1266,8 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Composizione socket e QUIC | `UdpQuicEndpoint` nel thread `net`; clock e scheduling al chiamante | §5.4, §9.2 (D-35) |
 | Key ID gate direzionale | La credenziale entrante e quella usata per rispondere sono derivate rispetto al destinatario corretto | §8.3 (D-36) |
 | MLS / MSRV | OpenMLS 0.9 e provider 0.6; Rust minimo 1.91 per rispettare MSRV dichiarata | §15.4, §21 (D-37) |
-| Persistenza MLS | Ripristino OpenMLS dall'ultimo snapshot autenticato nel log cifrato; compattazione ancora necessaria | §15.4, §16 (D-38) |
+| Persistenza MLS | Ripristino OpenMLS dall'ultimo snapshot autenticato; compattazione ogni 64 snapshot | §15.4, §16 (D-38) |
+| Derivazione chiavi storage | Chiavi specifiche per scopo HKDF-SHA256 derivate dal master key sbloccato | §6.1, §16 (D-39) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

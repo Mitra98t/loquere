@@ -2,14 +2,17 @@ use crate::{
     AccountId, DeviceCert, DeviceRole, IdentityError, Invitation, InviteCandidate, InviteOptions,
     take_array,
 };
+use hkdf::Hkdf;
 use loquere_crypto::{PassphraseEnvelope, PublicKey, SealedBox, SecretKey, Signature};
 use rand_core::{OsRng, RngCore};
+use sha2::Sha256;
 use zeroize::Zeroizing;
 
 /// Nuovo account con il primo dispositivo amministratore.
 pub struct Account {
     account_key: SecretKey,
     device_key: SecretKey,
+    master_key: Zeroizing<[u8; 32]>,
     discovery_secret: Zeroizing<[u8; 32]>,
     device_cert: DeviceCert,
 }
@@ -22,6 +25,8 @@ impl Account {
     pub fn create(device_name: String, created_at: u64) -> Result<Self, IdentityError> {
         let account_key = SecretKey::generate();
         let device_key = SecretKey::generate();
+        let mut master_key = Zeroizing::new([0u8; 32]);
+        OsRng.fill_bytes(&mut *master_key);
         let mut discovery_secret = Zeroizing::new([0u8; 32]);
         OsRng.fill_bytes(&mut *discovery_secret);
         let device_cert = DeviceCert::issue(
@@ -34,6 +39,7 @@ impl Account {
         Ok(Self {
             account_key,
             device_key,
+            master_key,
             discovery_secret,
             device_cert,
         })
@@ -52,6 +58,26 @@ impl Account {
     /// Chiave pubblica del primo dispositivo.
     pub fn device_public_key(&self) -> PublicKey {
         self.device_key.public_key()
+    }
+
+    /// Copia azzerabile della chiave privata del dispositivo, per inizializzare
+    /// protocolli che firmano a nome del dispositivo (ad esempio MLS).
+    pub fn device_signing_key(&self) -> Zeroizing<[u8; 32]> {
+        self.device_key.to_bytes()
+    }
+
+    /// Deriva una chiave d'archiviazione dedicata dal master key locale.
+    /// `purpose` deve essere un'etichetta stabile e non vuota, per esempio
+    /// `loquere:mls:<conversation-id>:v1`.
+    pub fn derive_storage_key(&self, purpose: &[u8]) -> Result<Zeroizing<[u8; 32]>, IdentityError> {
+        if purpose.is_empty() || purpose.len() > 200 {
+            return Err(IdentityError::InvalidEncoding);
+        }
+        let hkdf = Hkdf::<Sha256>::new(Some(b"loquere:storage-key:v1"), &*self.master_key);
+        let mut key = Zeroizing::new([0u8; 32]);
+        hkdf.expand(purpose, &mut *key)
+            .map_err(|_| IdentityError::InvalidEncoding)?;
+        Ok(key)
     }
 
     /// Firma un contenuto con la chiave dell'account.
@@ -93,16 +119,16 @@ impl Account {
     pub fn open(encoded: &[u8], master_key: &[u8; 32]) -> Result<Self, IdentityError> {
         let sealed = SealedBox::from_bytes(encoded)?;
         let plaintext = sealed.open(master_key, b"loquere:identity:v1")?;
-        Self::decode_secret_state(&plaintext)
+        let mut account = Self::decode_secret_state(&plaintext)?;
+        account.master_key = Zeroizing::new(*master_key);
+        Ok(account)
     }
 
     /// Protegge l'identità con una MK casuale e avvolge la MK con Argon2id.
     pub fn protect_with_passphrase(&self, passphrase: &str) -> Result<Vec<u8>, IdentityError> {
-        let mut master_key = Zeroizing::new([0u8; 32]);
-        OsRng.fill_bytes(&mut *master_key);
-        let encrypted_identity = self.seal(&master_key)?;
+        let encrypted_identity = self.seal(&self.master_key)?;
         let encrypted_master_key =
-            PassphraseEnvelope::seal(passphrase, &*master_key, b"loquere:master-key:v1")?
+            PassphraseEnvelope::seal(passphrase, &*self.master_key, b"loquere:master-key:v1")?
                 .to_bytes();
         let key_len = u32::try_from(encrypted_master_key.len())
             .map_err(|_| IdentityError::InvalidEncoding)?;
@@ -184,6 +210,7 @@ impl Account {
         Ok(Self {
             account_key,
             device_key,
+            master_key: Zeroizing::new([0u8; 32]),
             discovery_secret,
             device_cert,
         })
