@@ -42,7 +42,7 @@ impl PersistentInviteGrant {
         invite: &Invitation,
     ) -> Result<Self, InviteStoreError> {
         validate_owner(owner, invite)?;
-        let key = storage_key(owner, invite)?;
+        let key = storage_key(owner)?;
         let path = path.as_ref();
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
@@ -71,16 +71,47 @@ impl PersistentInviteGrant {
         invite: &Invitation,
     ) -> Result<Self, InviteStoreError> {
         validate_owner(owner, invite)?;
-        let key = storage_key(owner, invite)?;
+        let path = path.as_ref();
+        let (grant, stored) = match Self::load(path, owner) {
+            Ok(result) => result,
+            Err(_) => {
+                // Compatibilità con i log v1 che richiedono l'invito noto.
+                let mut purpose = zeroize::Zeroizing::new(b"loquere:invite-store:v1\0".to_vec());
+                purpose.extend_from_slice(&invite.token());
+                let key = owner
+                    .derive_storage_key(&purpose)
+                    .map_err(InviteStoreError::Identity)?;
+                Self::load_with_key(path, owner, &key)?
+            }
+        };
+        if &stored != invite {
+            return Err(InviteStoreError::InvalidLog);
+        }
+        Ok(grant)
+    }
+
+    /// Riapre lo stato e recupera l'invito cifrato senza richiedere il link.
+    pub fn load(
+        path: impl AsRef<Path>,
+        owner: &Account,
+    ) -> Result<(Self, Invitation), InviteStoreError> {
+        let key = storage_key(owner)?;
+        Self::load_with_key(path, owner, &key)
+    }
+
+    fn load_with_key(
+        path: impl AsRef<Path>,
+        owner: &Account,
+        key: &[u8; 32],
+    ) -> Result<(Self, Invitation), InviteStoreError> {
         std::fs::File::open(path.as_ref())
             .map_err(|error| InviteStoreError::Store(StoreError::Io(error)))?;
         let opened = RecordLog::open(path, *key).map_err(InviteStoreError::Store)?;
-        let expected =
-            zeroize::Zeroizing::new(invite.to_bytes().map_err(InviteStoreError::Identity)?);
-        if opened.records.first().map(|r| r.as_slice()) != Some(expected.as_slice()) {
-            return Err(InviteStoreError::InvalidLog);
-        }
-        let mut grant = Self::from_parts(opened.log, invite);
+        let invite =
+            Invitation::from_bytes(opened.records.first().ok_or(InviteStoreError::InvalidLog)?)
+                .map_err(InviteStoreError::Identity)?;
+        validate_owner(owner, &invite)?;
+        let mut grant = Self::from_parts(opened.log, &invite);
         for record in opened.records.iter().skip(1) {
             if grant.unavailable
                 || (record.as_slice() != REVOKED
@@ -91,7 +122,7 @@ impl PersistentInviteGrant {
             grant.unavailable = true;
             grant.grant.revoke();
         }
-        Ok(grant)
+        Ok((grant, invite))
     }
 
     fn from_parts(log: RecordLog, invite: &Invitation) -> Self {
@@ -178,14 +209,9 @@ fn validate_owner(owner: &Account, invite: &Invitation) -> Result<(), InviteStor
     Ok(())
 }
 
-fn storage_key(
-    owner: &Account,
-    invite: &Invitation,
-) -> Result<zeroize::Zeroizing<[u8; 32]>, InviteStoreError> {
-    let mut purpose = zeroize::Zeroizing::new(b"loquere:invite-store:v1\0".to_vec());
-    purpose.extend_from_slice(&invite.token());
+fn storage_key(owner: &Account) -> Result<zeroize::Zeroizing<[u8; 32]>, InviteStoreError> {
     owner
-        .derive_storage_key(&purpose)
+        .derive_storage_key(b"loquere:invite-store:v2")
         .map_err(InviteStoreError::Identity)
 }
 
@@ -263,6 +289,37 @@ mod tests {
         drop(grant);
         let mut reopened = PersistentInviteGrant::open(&path, &owner, &invite).unwrap();
         assert!(reopened.begin(&invite.token(), 50, 4).is_err());
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn opens_legacy_v1_when_invitation_is_known() {
+        let path = path();
+        let owner = Account::create("Owner".into(), 1).unwrap();
+        let invite = owner
+            .create_invite(
+                "Owner".into(),
+                0,
+                InviteOptions {
+                    single_use: true,
+                    auto_accept: false,
+                },
+                vec![],
+            )
+            .unwrap();
+        let mut purpose = zeroize::Zeroizing::new(b"loquere:invite-store:v1\0".to_vec());
+        purpose.extend_from_slice(&invite.token());
+        let key = owner.derive_storage_key(&purpose).unwrap();
+        let mut log = RecordLog::open(&path, *key).unwrap().log;
+        log.append(&invite.to_bytes().unwrap()).unwrap();
+        drop(log);
+        let mut reopened = PersistentInviteGrant::open(&path, &owner, &invite).unwrap();
+        reopened.begin(&invite.token(), 10, 1).unwrap();
+        reopened.accept(1, 10).unwrap();
+        drop(reopened);
+        let mut reopened = PersistentInviteGrant::open(&path, &owner, &invite).unwrap();
+        assert!(reopened.begin(&invite.token(), 10, 2).is_err());
         drop(reopened);
         std::fs::remove_file(path).unwrap();
     }

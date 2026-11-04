@@ -61,6 +61,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             let mut file = None;
             let mut name = None;
             let mut expires_in = None;
+            let mut state_file = None;
             while let Some(option) = args.next() {
                 let value = args
                     .next()
@@ -69,6 +70,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
                     "--file" => &mut file,
                     "--name" => &mut name,
                     "--expires-in" => &mut expires_in,
+                    "--state-file" => &mut state_file,
                     _ => return Err(usage()),
                 };
                 if slot.replace(value).is_some() {
@@ -77,6 +79,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             }
             let file = file.ok_or_else(usage)?;
             let name = name.ok_or_else(usage)?;
+            let state_file = state_file.ok_or_else(usage)?;
             let duration = parse_duration(expires_in.as_deref().unwrap_or("7d"))?;
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -87,8 +90,13 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
                 .and_then(|timestamp| u32::try_from(timestamp).ok())
                 .ok_or_else(|| "scadenza oltre il limite rappresentabile".to_owned())?;
             let passphrase = loquere_cli::prompt_passphrase().map_err(|error| error.to_string())?;
-            let code = loquere_cli::create_invite_from_file(file, &passphrase, name, expires_at)
-                .map_err(|error| error.to_string())?;
+            let code = loquere_cli::create_persistent_invite_from_file(
+                file,
+                &passphrase,
+                name,
+                expires_at,
+                state_file,
+            )?;
             println!("{code}");
             Ok(())
         }
@@ -316,7 +324,7 @@ fn write_new_file(path: &str, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "uso: loquere-cli id new --name <nome-dispositivo> --output <file>\n     loquere-cli id show --file <file>\n     loquere-cli invite create --file <file> --name <nome> [--expires-in 7d]\n     loquere-cli invite inspect <URI-o-codice-invito>\n     loquere-cli chat init --identity-file <file> --state-file <file>\n     loquere-cli chat show --identity-file <file> --state-file <file>\n     loquere-cli chat key-package --identity-file <file> --state-file <file> --output <file>\n     loquere-cli chat add-member --identity-file <file> --state-file <file> --key-package <file> --welcome-out <file> --tree-out <file> --commit-out <file>\n     loquere-cli chat join --identity-file <file> --state-file <file> --welcome <file> --tree <file>\n     loquere-cli chat apply-commit --identity-file <file> --state-file <file> --commit <file>\n     loquere-cli chat send --identity-file <file> --state-file <file> --message <testo> --output <file>\n     loquere-cli chat receive --identity-file <file> --state-file <file> --input <file>\n     loquere-cli --help".to_owned()
+    "uso: loquere-cli id new --name <nome-dispositivo> --output <file>\n     loquere-cli id show --file <file>\n     loquere-cli invite create --file <file> --name <nome> --state-file <file> [--expires-in 7d]\n     loquere-cli invite inspect <URI-o-codice-invito>\n     loquere-cli chat init --identity-file <file> --state-file <file>\n     loquere-cli chat show --identity-file <file> --state-file <file>\n     loquere-cli chat key-package --identity-file <file> --state-file <file> --output <file>\n     loquere-cli chat add-member --identity-file <file> --state-file <file> --key-package <file> --welcome-out <file> --tree-out <file> --commit-out <file>\n     loquere-cli chat join --identity-file <file> --state-file <file> --welcome <file> --tree <file>\n     loquere-cli chat apply-commit --identity-file <file> --state-file <file> --commit <file>\n     loquere-cli chat send --identity-file <file> --state-file <file> --message <testo> --output <file>\n     loquere-cli chat receive --identity-file <file> --state-file <file> --input <file>\n     loquere-cli --help".to_owned()
 }
 
 fn parse_duration(value: &str) -> Result<u64, String> {

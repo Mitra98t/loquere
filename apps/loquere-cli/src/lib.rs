@@ -318,6 +318,33 @@ pub fn create_invite_from_file(
     invite.to_uri().map_err(IdentityFileError::Identity)
 }
 
+/// Genera un invito e lo salva cifrato prima di restituire il link.
+/// Non invia richieste né rende ancora il nodo raggiungibile.
+pub fn create_persistent_invite_from_file(
+    path: impl AsRef<Path>,
+    passphrase: &str,
+    display_name: String,
+    expires_at: u32,
+    state_path: impl AsRef<Path>,
+) -> Result<String, String> {
+    let account = unlock_identity_file(path, passphrase).map_err(|error| error.to_string())?;
+    let invite = account
+        .create_invite(
+            display_name,
+            expires_at,
+            InviteOptions {
+                single_use: true,
+                auto_accept: false,
+            },
+            Vec::new(),
+        )
+        .map_err(|error| error.to_string())?;
+    let uri = invite.to_uri().map_err(|error| error.to_string())?;
+    PersistentInviteGrant::create(state_path, &account, &invite)
+        .map_err(|error| format!("impossibile salvare l'invito: {error:?}"))?;
+    Ok(uri)
+}
+
 fn encode_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut encoded = String::with_capacity(bytes.len() * 2);
@@ -510,6 +537,29 @@ mod tests {
         assert!(invite.options().single_use);
         assert!(!invite.options().auto_accept);
         assert!(invite.candidates().is_empty());
+        let state_path = path.with_extension("invite-log");
+        let code = create_persistent_invite_from_file(
+            &path,
+            "a strong passphrase",
+            "Alice".to_owned(),
+            99,
+            &state_path,
+        )
+        .unwrap();
+        let expected = Invitation::parse_code(&code).unwrap();
+        let (_, restored) = PersistentInviteGrant::load(&state_path, &account).unwrap();
+        assert_eq!(restored, expected);
+        assert!(
+            create_persistent_invite_from_file(
+                &path,
+                "a strong passphrase",
+                "Alice".to_owned(),
+                99,
+                &state_path
+            )
+            .is_err()
+        );
+        std::fs::remove_file(state_path).unwrap();
         let _ = std::fs::remove_file(path);
     }
 }

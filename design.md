@@ -357,7 +357,7 @@ Lunghezza tipica: ~320 byte → ~510 caratteri base32. Sufficiente per un QR di 
 
 Se nessun candidato del link risponde (Alice offline o non raggiungibile), il nodo di Bob mette la richiesta **in coda** e riprova periodicamente, sfruttando anche eventuali amici comuni per trovare Alice (§10.2).
 
-**D-43. Consumo locale dell'invito.** Il nodo emittente conserva l'invito e gli eventi di consumo o revoca in un log cifrato dedicato, con chiave derivata dall'identità e dal token. Per un invito monouso, una sola richiesta può essere in attesa; il consumo viene sincronizzato su disco dopo la conferma e prima di inviare `FriendAccept`. La prenotazione in corso viene annullata al riavvio. Come per le liste amici, sostituire il log con una copia autentica più vecchia resta rilevabile solo con un ancoraggio monotono esterno, non ancora implementato.
+**D-43. Consumo locale dell'invito.** Il nodo emittente conserva l'invito e gli eventi di consumo o revoca in un log cifrato dedicato, con chiave derivata dall'identità e dall'etichetta `loquere:invite-store:v2`, così da poter riaprire il log senza conoscere già il token. Per un invito monouso, una sola richiesta può essere in attesa; il consumo viene sincronizzato su disco dopo la conferma e prima di inviare `FriendAccept`. La prenotazione in corso viene annullata al riavvio. Come per le liste amici, sostituire il log con una copia autentica più vecchia resta rilevabile solo con un ancoraggio monotono esterno, non ancora implementato.
 
 ### 7.3 Rimozione di un amico e blocco
 
@@ -1085,7 +1085,7 @@ loquere-cli device link                       # su un nuovo dispositivo: mostra 
 loquere-cli device approve "TCL-…"            # su un dispositivo Admin: approva, mostra il codice di verifica
 loquere-cli device list
 loquere-cli device revoke "MacBook vecchio"
-loquere-cli invite create --file identity.loq --name "Alice" --expires-in 7d # monouso, accettazione manuale
+loquere-cli invite create --file identity.loq --name "Alice" --state-file invite.log --expires-in 7d # monouso, accettazione manuale; salva stato cifrato
 loquere-cli invite inspect "loquere://invite/…" # verifica firma e mostra i dati pubblici
 loquere-cli friend add "loquere://invite/…"
 loquere-cli friend list
