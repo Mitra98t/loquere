@@ -2,11 +2,13 @@
 
 //! Macchine a stati sans-IO per il trasporto Loquere.
 
+mod frame;
 mod gate;
 mod quic_config;
 mod quic_node;
 mod tls;
 
+pub use frame::{FrameDecoder, FrameError, encode_frame};
 pub use gate::{
     GateDecision, GateError, SilentFilter, gate_initial_datagram, gate_key_id_for,
     is_quic_initial_packet,
