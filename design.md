@@ -973,9 +973,11 @@ Loquere/
 
 **D-33. Demultiplexing UDP pre-QUIC.** `loquere-net` rimuove il prefisso solo quando il payload dopo i 40 byte è un QUIC v1 Initial; gli Initial scaduti o con MAC non valido vengono comunque inviati al controllo gate e scartati, senza euristiche sull'orario per riconoscere il prefisso. Gli altri pacchetti passano solo se il destination CID è un CID locale autenticato. Nessun socket o invio è implementato da questo filtro.
 
-**D-34. Adapter UDP portabile iniziale.** `UdpSocketAdapter` usa `std::net::UdpSocket` bloccante, buffer ricezione del chiamante e timeout configurabile nel thread `net`. Initial QUIC non possono essere inviati senza prefisso: `send_gate_initial` verifica il key ID e applica il MAC; gli altri pacchetti usano `send`. ECN, GSO o override IP sorgente non applicabile sono errori espliciti, mai ignorati. Un backend OS-specifico potrà aggiungere queste ottimizzazioni senza cambiare il filtro sans-IO.
+**D-34. Adapter UDP portabile iniziale.** `UdpSocketAdapter` usa `std::net::UdpSocket` bloccante, buffer ricezione del chiamante e timeout configurabile nel thread `net`. Initial QUIC non possono essere inviati senza prefisso: `send_gate_initial` verifica il key ID e applica il MAC; gli altri pacchetti usano `send`. ECN, GSO o override IP sorgente non applicabile sono errori espliciti, mai ignorati; ECN può essere ignorato solo scegliendo esplicitamente `IgnoreExplicitly`. Un backend OS-specifico potrà aggiungere queste ottimizzazioni senza cambiare il filtro sans-IO.
 
 **D-35. Composizione rete–QUIC.** `UdpQuicEndpoint` possiede adapter, filtro ingressi e `QuicNode` in un unico oggetto da assegnare al thread `net`; espone ricezione filtrata, `poll` dei timer, accesso alla macchina QUIC e invio con prefisso autenticato sugli Initial. Il chiamante continua a governare il clock e lo scheduling, così il protocollo resta testabile sans-IO.
+
+**D-36. Key ID gate direzionale.** Un ingresso autenticato identifica il key ID locale (derivato per il dispositivo destinatario locale), ma una risposta deve usare il key ID derivato per il DeviceId remoto. `authorize_peer_secret` registra la corrispondenza per la relazione; `UdpQuicEndpoint` applica il key ID remoto alle risposte. Il mittente del primo Initial conosce già il dispositivo destinatario e fornisce direttamente la stessa credenziale.
 
 ---
 
@@ -1254,6 +1256,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Demultiplexing ingresso UDP | Initial identificato dopo il prefisso; altri pacchetti richiedono CID locale autenticato | §8.3 (D-33) |
 | Adapter UDP | Socket bloccanti `std`, due famiglie bindate separatamente; metadati non applicabili rifiutati esplicitamente | §9.2 (D-34) |
 | Composizione socket e QUIC | `UdpQuicEndpoint` nel thread `net`; clock e scheduling al chiamante | §5.4, §9.2 (D-35) |
+| Key ID gate direzionale | La credenziale entrante e quella usata per rispondere sono derivate rispetto al destinatario corretto | §8.3 (D-36) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

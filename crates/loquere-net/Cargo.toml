@@ -9,3 +9,6 @@ rust-version.workspace = true
 [dependencies]
 loquere-wire = { path = "../loquere-wire" }
 quinn-proto.workspace = true
+
+[dev-dependencies]
+loquere-crypto = { path = "../loquere-crypto" }

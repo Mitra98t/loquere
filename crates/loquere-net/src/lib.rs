@@ -17,6 +17,18 @@ use std::time::Duration;
 /// falliscono esplicitamente finché non sarà aggiunto il backend OS dedicato.
 pub struct UdpSocketAdapter {
     socket: UdpSocket,
+    ecn_handling: EcnHandling,
+}
+
+/// Politica esplicita per i codepoint ECN che l'API UDP standard non può
+/// applicare. La modalità predefinita è `Reject`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EcnHandling {
+    /// Non inviare pacchetti se Quinn richiede un codepoint ECN.
+    #[default]
+    Reject,
+    /// Invia comunque, accettando esplicitamente di non applicare ECN.
+    IgnoreExplicitly,
 }
 
 /// Collegamento tra socket, filtro d'ingresso e macchina QUIC sans-IO.
@@ -58,11 +70,23 @@ impl UdpSocketAdapter {
     /// Apre un socket su un indirizzo esplicito. Per IPv4 e IPv6 si creano
     /// adapter distinti, entrambi posseduti dal thread `net`.
     pub fn bind(address: SocketAddr, read_timeout: Duration) -> Result<Self, UdpSocketError> {
+        Self::bind_with_ecn_handling(address, read_timeout, EcnHandling::Reject)
+    }
+
+    /// Come [`Self::bind`], con una scelta esplicita per l'ECN.
+    pub fn bind_with_ecn_handling(
+        address: SocketAddr,
+        read_timeout: Duration,
+        ecn_handling: EcnHandling,
+    ) -> Result<Self, UdpSocketError> {
         let socket = UdpSocket::bind(address).map_err(UdpSocketError::Io)?;
         socket
             .set_read_timeout(Some(read_timeout))
             .map_err(UdpSocketError::Io)?;
-        Ok(Self { socket })
+        Ok(Self {
+            socket,
+            ecn_handling,
+        })
     }
 
     /// Indirizzo locale effettivamente assegnato, utile quando la porta era 0.
@@ -124,7 +148,7 @@ impl UdpSocketAdapter {
         if transmit.payload.len() > 65_507 {
             return Err(UdpSocketError::DatagramTooLarge);
         }
-        if transmit.ecn.is_some() {
+        if transmit.ecn.is_some() && self.ecn_handling == EcnHandling::Reject {
             return Err(UdpSocketError::UnsupportedMetadata("ECN"));
         }
         if transmit.segment_size.is_some() {
@@ -189,7 +213,7 @@ impl UdpQuicEndpoint {
             received.source,
             Some(local_ip),
             None,
-            accepted.gate_key_id,
+            accepted.peer_gate_key_id,
             accepted.packet,
         )))
     }
@@ -224,6 +248,15 @@ impl UdpQuicEndpoint {
     /// Registra un segreto peer nel filtro d'ingresso.
     pub fn authorize_secret(&mut self, secret: &[u8]) -> Result<[u8; 16], GateError> {
         self.ingress.authorize_secret(secret)
+    }
+
+    /// Autorizza un peer e registra il key ID necessario alle risposte Initial.
+    pub fn authorize_peer_secret(
+        &mut self,
+        secret: &[u8],
+        peer_device_id: [u8; 32],
+    ) -> Result<[u8; 16], GateError> {
+        self.ingress.authorize_peer_secret(secret, peer_device_id)
     }
 
     /// Indirizzo locale effettivo del socket.
@@ -262,12 +295,15 @@ pub struct AcceptedDatagram<'a> {
     pub packet: &'a [u8],
     /// Credenziale che ha autenticato un Initial; `None` per CID già noti.
     pub gate_key_id: Option<[u8; 16]>,
+    /// Key ID destinatario remoto, utile per prefissare una risposta Initial.
+    pub peer_gate_key_id: Option<[u8; 16]>,
 }
 
 /// Filtro d'ingresso UDP: i primi pacchetti richiedono un segreto gate, gli
 /// altri devono portare un CID locale autenticato. Non apre socket e non invia.
 pub struct UdpIngressFilter {
     gate: SilentFilter,
+    peer_gate_ids: std::collections::HashMap<[u8; 16], [u8; 16]>,
 }
 
 impl UdpIngressFilter {
@@ -275,6 +311,7 @@ impl UdpIngressFilter {
     pub fn new(device_id: [u8; 32]) -> Self {
         Self {
             gate: SilentFilter::new(device_id),
+            peer_gate_ids: std::collections::HashMap::new(),
         }
     }
 
@@ -283,8 +320,23 @@ impl UdpIngressFilter {
         self.gate.authorize_secret(secret)
     }
 
+    /// Registra una credenziale legata anche al DeviceId remoto, così le
+    /// risposte QUIC Initial possono essere prefissate con il key ID destinato
+    /// a quel peer. Il valore restituito è il key ID locale d'ingresso.
+    pub fn authorize_peer_secret(
+        &mut self,
+        secret: &[u8],
+        peer_device_id: [u8; 32],
+    ) -> Result<[u8; 16], GateError> {
+        let local_key_id = self.gate.authorize_secret(secret)?;
+        let peer_key_id = gate_key_id_for(peer_device_id, secret)?;
+        self.peer_gate_ids.insert(local_key_id, peer_key_id);
+        Ok(local_key_id)
+    }
+
     /// Revoca il segreto identificato dal key ID.
     pub fn revoke(&mut self, key_id: &[u8; 16]) -> bool {
+        self.peer_gate_ids.remove(key_id);
         self.gate.revoke_key_id(key_id)
     }
 
@@ -305,6 +357,7 @@ impl UdpIngressFilter {
                 GateDecision::PassInitial { packet, key_id } => Some(AcceptedDatagram {
                     packet,
                     gate_key_id: Some(key_id),
+                    peer_gate_key_id: self.peer_gate_ids.get(&key_id).copied(),
                 }),
                 GateDecision::Drop => None,
             };
@@ -318,6 +371,7 @@ impl UdpIngressFilter {
             .then_some(AcceptedDatagram {
                 packet: datagram,
                 gate_key_id: None,
+                peer_gate_key_id: None,
             })
     }
 }
@@ -358,8 +412,18 @@ fn destination_cid(datagram: &[u8]) -> Option<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loquere_wire::gate_initial_datagram;
-    use std::time::Duration;
+    use loquere_crypto::SecretKey;
+    use loquere_wire::{build_quic_client_config, build_quic_server_config, gate_initial_datagram};
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime};
+
+    struct FixedTime;
+
+    impl quinn_proto::TimeSource for FixedTime {
+        fn now(&self) -> SystemTime {
+            SystemTime::UNIX_EPOCH
+        }
+    }
 
     fn source(port: u16) -> SocketAddr {
         SocketAddr::from(([192, 0, 2, 99], port))
@@ -368,6 +432,7 @@ mod tests {
     #[test]
     fn only_authorized_initial_packets_pass_and_gate_key_is_returned() {
         let device_id = [0x52; 32];
+        let peer_device_id = [0x12; 32];
         let secret = [0xa3; 16];
         let packet = [0xc0, 0, 0, 0, 1, 0];
         let datagram = gate_initial_datagram(device_id, &secret, 1000, &packet).unwrap();
@@ -375,12 +440,18 @@ mod tests {
         let node = QuicNode::client([0x11; 32]);
 
         assert_eq!(filter.inspect(&node, source(4000), &datagram, 1000), None);
-        let key_id = filter.authorize_secret(&secret).unwrap();
+        let key_id = filter
+            .authorize_peer_secret(&secret, peer_device_id)
+            .unwrap();
         let accepted = filter
             .inspect(&node, source(4000), &datagram, 1000)
             .unwrap();
         assert_eq!(accepted.packet, packet);
         assert_eq!(accepted.gate_key_id, Some(key_id));
+        assert_eq!(
+            accepted.peer_gate_key_id,
+            Some(gate_key_id_for(peer_device_id, &secret).unwrap())
+        );
         assert_eq!(filter.inspect(&node, source(4001), &packet, 1000), None);
     }
 
@@ -536,5 +607,117 @@ mod tests {
             endpoint.receive_once(&mut [0; 32], now, 1000),
             Err(UdpSocketError::ReceiveBufferTooSmall)
         ));
+    }
+
+    #[test]
+    fn two_udp_endpoints_complete_mutual_quic_handshake_with_gate() {
+        let client_key = Arc::new(SecretKey::generate());
+        let server_key = Arc::new(SecretKey::generate());
+        let client_config =
+            build_quic_client_config(client_key.clone(), server_key.public_key()).unwrap();
+        let server_config = Arc::new(
+            build_quic_server_config(
+                server_key.clone(),
+                [client_key.public_key().to_bytes()],
+                Arc::new(FixedTime),
+            )
+            .unwrap(),
+        );
+        let loopback = SocketAddr::from(([127, 0, 0, 1], 0));
+        let client_socket = UdpSocketAdapter::bind_with_ecn_handling(
+            loopback,
+            Duration::from_millis(2),
+            EcnHandling::IgnoreExplicitly,
+        )
+        .unwrap();
+        let server_socket = UdpSocketAdapter::bind_with_ecn_handling(
+            loopback,
+            Duration::from_millis(2),
+            EcnHandling::IgnoreExplicitly,
+        )
+        .unwrap();
+        let client_device = client_key.public_key().to_bytes();
+        let server_device = server_key.public_key().to_bytes();
+        let shared_secret = [0x61; 32];
+        let client_gate = gate_key_id_for(server_device, &shared_secret).unwrap();
+        let mut client_ingress = UdpIngressFilter::new(client_device);
+        let mut server_ingress = UdpIngressFilter::new(server_device);
+        client_ingress
+            .authorize_peer_secret(&shared_secret, server_device)
+            .unwrap();
+        server_ingress
+            .authorize_peer_secret(&shared_secret, client_device)
+            .unwrap();
+        let mut client =
+            UdpQuicEndpoint::new(client_socket, client_ingress, QuicNode::client([0x11; 32]));
+        let mut server = UdpQuicEndpoint::new(
+            server_socket,
+            server_ingress,
+            QuicNode::server([0x22; 32], server_config),
+        );
+        let server_addr = server.local_addr().unwrap();
+        let client_handle = client
+            .node_mut()
+            .connect(
+                std::time::Instant::now(),
+                server_addr,
+                "loquere",
+                client_config,
+                Some(client_gate),
+            )
+            .unwrap();
+        let mut client_buffer = vec![0; MAX_UDP_PAYLOAD];
+        let mut server_buffer = vec![0; MAX_UDP_PAYLOAD];
+        let start = std::time::Instant::now();
+        let mut client_connected = false;
+        let mut server_connected = false;
+
+        for tick in 0..100 {
+            let now = start + Duration::from_millis(tick * 10);
+            let output = client.poll(now);
+            client_connected |= output.events.iter().any(|event| {
+                matches!(event, loquere_wire::QuicEvent::Connected(handle) if *handle == client_handle)
+            });
+            for transmit in &output.datagrams {
+                client
+                    .send(transmit, Some((server_device, &shared_secret)), 1_000_000)
+                    .unwrap();
+            }
+
+            if let Some(output) = server
+                .receive_once(&mut server_buffer, now, 1_000_000)
+                .unwrap()
+            {
+                for transmit in &output.datagrams {
+                    server
+                        .send(transmit, Some((client_device, &shared_secret)), 1_000_000)
+                        .unwrap();
+                }
+                server_connected |= output
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, loquere_wire::QuicEvent::Connected(_)));
+            }
+            if let Some(output) = client
+                .receive_once(&mut client_buffer, now, 1_000_000)
+                .unwrap()
+            {
+                for transmit in &output.datagrams {
+                    client
+                        .send(transmit, Some((server_device, &shared_secret)), 1_000_000)
+                        .unwrap();
+                }
+                client_connected |= output.events.iter().any(|event| {
+                    matches!(event, loquere_wire::QuicEvent::Connected(handle) if *handle == client_handle)
+                });
+            }
+            if client_connected && server_connected {
+                break;
+            }
+        }
+
+        assert!(client_connected, "UDP client handshake did not complete");
+        assert!(server_connected, "UDP server handshake did not complete");
+        assert_eq!(client.node_mut().is_established(client_handle), Some(true));
     }
 }
