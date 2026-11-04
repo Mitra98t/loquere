@@ -1,6 +1,6 @@
 use crate::{
-    AccountId, DeviceCert, DeviceRole, IdentityError, Invitation, InviteCandidate, InviteOptions,
-    take_array,
+    AccountId, DeviceCert, DeviceList, DeviceRole, IdentityError, Invitation, InviteCandidate,
+    InviteOptions, take_array,
 };
 use hkdf::Hkdf;
 use loquere_crypto::{PassphraseEnvelope, PublicKey, SealedBox, SecretKey, Signature};
@@ -83,6 +83,12 @@ impl Account {
     /// Firma un contenuto con la chiave dell'account.
     pub fn sign_as_account(&self, message: &[u8]) -> Signature {
         self.account_key.sign(message)
+    }
+
+    /// Firma la lista iniziale con il primo dispositivo, solo per il bootstrap.
+    /// Non usare per sostituire una lista esistente o azzerarne la sequenza.
+    pub fn initial_device_list(&self) -> Result<DeviceList, IdentityError> {
+        DeviceList::issue(&self.account_key, 0, vec![self.device_cert.clone()], vec![])
     }
 
     /// Crea un invito firmato da questo dispositivo Admin.

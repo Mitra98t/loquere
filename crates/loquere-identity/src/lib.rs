@@ -120,6 +120,11 @@ mod tests {
         assert_eq!(account.device_cert().verify(), Ok(()));
         assert_eq!(account.device_cert().role(), DeviceRole::Admin);
         assert_eq!(account.device_cert().account_id(), account.account_id());
+        let list = account.initial_device_list().unwrap();
+        assert_eq!(list.sequence(), 0);
+        assert_eq!(list.account_id(), account.account_id());
+        assert!(list.contains_device(&account.device_public_key().to_bytes()));
+        assert_eq!(DeviceList::from_bytes(&list.to_bytes()), Ok(list));
         assert_eq!(
             account.device_cert().device_id(),
             account.device_public_key()
