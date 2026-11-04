@@ -754,14 +754,16 @@ mod tests {
         let plaintext = b"ciao da OpenMLS su QUIC";
         let ciphertext = alice.encrypt(plaintext).unwrap();
         assert!(!ciphertext.windows(plaintext.len()).any(|w| w == plaintext));
-        let frame = loquere_wire::encode_chat_message(&ciphertext).unwrap();
-        assert_eq!(
-            client
+        let mut frame = loquere_wire::PendingChatFrame::new(&ciphertext).unwrap();
+        while !frame.remaining().is_empty() {
+            let chunk = &frame.remaining()[..frame.remaining().len().min(7)];
+            let written = client
                 .node_mut()
-                .write_stream(client_handle, stream, &frame)
-                .unwrap(),
-            frame.len()
-        );
+                .write_stream(client_handle, stream, chunk)
+                .unwrap();
+            assert!(written > 0);
+            frame.advance(written).unwrap();
+        }
         client
             .node_mut()
             .finish_stream(client_handle, stream)

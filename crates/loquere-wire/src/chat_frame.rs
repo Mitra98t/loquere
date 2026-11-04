@@ -31,6 +31,36 @@ pub fn encode_chat_message(message: &[u8]) -> Result<Vec<u8>, ChatFrameError> {
     encode_frame(&payload, MAX_CHAT_FRAME).map_err(ChatFrameError::Framing)
 }
 
+/// Un frame in attesa di scrittura su QUIC, gestibile anche parzialmente.
+pub struct PendingChatFrame {
+    bytes: Vec<u8>,
+    offset: usize,
+}
+
+impl PendingChatFrame {
+    /// Codifica un ciphertext MLS per l'invio senza effettuare I/O.
+    pub fn new(message: &[u8]) -> Result<Self, ChatFrameError> {
+        Ok(Self {
+            bytes: encode_chat_message(message)?,
+            offset: 0,
+        })
+    }
+
+    /// Byte non ancora accettati da QUIC; vuoto soltanto a invio completato.
+    pub fn remaining(&self) -> &[u8] {
+        &self.bytes[self.offset..]
+    }
+
+    /// Registra i byte effettivamente accettati; rifiuta avanzamenti impossibili.
+    pub fn advance(&mut self, written: usize) -> Result<(), ChatFrameError> {
+        if written > self.remaining().len() {
+            return Err(ChatFrameError::InvalidRecord);
+        }
+        self.offset += written;
+        Ok(())
+    }
+}
+
 /// Decoder incrementale; i byte restituiti non sono ancora autenticati.
 pub struct ChatFrameDecoder {
     inner: FrameDecoder,
@@ -130,5 +160,24 @@ mod tests {
             decoder.finish(),
             Err(ChatFrameError::Framing(FrameError::Truncated))
         );
+    }
+
+    #[test]
+    fn partial_writes_preserve_order_and_do_not_skip_bytes() {
+        let expected = encode_chat_message(b"ciphertext").unwrap();
+        let mut frame = PendingChatFrame::new(b"ciphertext").unwrap();
+        assert_eq!(
+            frame.advance(expected.len() + 1),
+            Err(ChatFrameError::InvalidRecord)
+        );
+        let mut written = Vec::new();
+        while !frame.remaining().is_empty() {
+            let count = frame.remaining().len().min(3);
+            written.extend_from_slice(&frame.remaining()[..count]);
+            frame.advance(count).unwrap();
+        }
+        assert_eq!(written, expected);
+        assert_eq!(frame.advance(0), Ok(()));
+        assert_eq!(frame.advance(1), Err(ChatFrameError::InvalidRecord));
     }
 }

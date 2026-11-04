@@ -9,7 +9,7 @@ mod quic_config;
 mod quic_node;
 mod tls;
 
-pub use chat_frame::{ChatFrameDecoder, ChatFrameError, encode_chat_message};
+pub use chat_frame::{ChatFrameDecoder, ChatFrameError, PendingChatFrame, encode_chat_message};
 pub use frame::{FrameDecoder, FrameError, encode_frame};
 pub use gate::{
     GateDecision, GateError, SilentFilter, gate_initial_datagram, gate_key_id_for,
