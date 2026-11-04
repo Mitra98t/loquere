@@ -268,6 +268,8 @@ DeviceList {
 }
 ```
 
+**D-42. Codifica DeviceList.** Dominio `loquere:device-list:v1\0`, `account_id` (32 B), `seq` u64 LE, conteggio dispositivi u16 LE, certificati preceduti da lunghezza u32 LE, conteggio revoche u16 LE, identificatori revocati da 32 B e firma Ed25519 dell'account sui byte precedenti. Certificati e revoche sono ordinati per identificatore, senza duplicati né dispositivi attivi revocati; massimo 256 elementi per elenco e 1 MiB complessivo. Il ricevente deve verificare certificati e firma e conservare la sequenza più recente per impedire rollback; una lista valida da sola non prova l'amicizia.
+
 **Ruoli.** Un dispositivo **Admin** custodisce `IK` e può collegare e revocare dispositivi, creare inviti e firmare il profilo. Un dispositivo **Member** ha solo le proprie chiavi: chatta, chiama, fa da relay, ma se viene compromesso non può prendersi l'account. Predefinito: il primo dispositivo è Admin; i successivi sono Member salvo scelta esplicita; un nodo headless sempre acceso (§19.4) è **sempre** Member, perché è il più esposto.
 
 **Collegare un nuovo dispositivo:**
@@ -1283,6 +1285,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Derivazione chiavi storage | Chiavi specifiche per scopo HKDF-SHA256 derivate dal master key sbloccato | §6.1, §16 (D-39) |
 | Framing stream chat | Lunghezza u32 BE, versione e tipo, limite 1 MiB; contenuto autenticato da MLS | §8.2 (D-40) |
 | Primo controllo amici | Record `Hello` versionato; autorizzazione separata sulla chiave TLS del dispositivo amico | §8.2, §8.3 (D-41) |
+| DeviceList firmata | Codifica canonica limitata, firma account e controlli di revoca; anti-rollback al chiamante | §6.4 (D-42) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

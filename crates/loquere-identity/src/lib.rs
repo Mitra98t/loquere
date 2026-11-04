@@ -6,12 +6,14 @@ mod account;
 mod account_id;
 mod certificate;
 mod codec;
+mod device_list;
 mod error;
 mod invite;
 
 pub use account::Account;
 pub use account_id::AccountId;
 pub use certificate::{DeviceCert, DeviceRole};
+pub use device_list::DeviceList;
 pub use error::IdentityError;
 pub use invite::{Invitation, InviteCandidate, InviteOptions};
 
