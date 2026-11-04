@@ -165,6 +165,62 @@ impl DeviceList {
     }
 }
 
+/// Rifiuto di aggiornamento di una lista dispositivi già fidata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeviceListUpdateError {
+    /// La lista è firmata da un altro account.
+    DifferentAccount,
+    /// Sequenza meno recente o stesso numero con contenuti diversi.
+    RollbackOrConflict,
+    /// Una revoca precedente è stata rimossa dalla lista.
+    RevocationRemoved,
+}
+
+/// Lista in memoria per un account già approvato esplicitamente dal chiamante.
+/// La fiducia e l'anti-rollback non sopravvivono al riavvio senza persistenza.
+pub struct TrustedDeviceList {
+    current: DeviceList,
+}
+
+impl TrustedDeviceList {
+    /// Il chiamante deve aver già confermato l'amicizia con questo account.
+    pub fn from_approved_friend(list: DeviceList) -> Self {
+        Self { current: list }
+    }
+
+    /// Accetta duplicati identici o una sequenza maggiore senza perdere revoche.
+    pub fn update(&mut self, next: DeviceList) -> Result<(), DeviceListUpdateError> {
+        if next.account != self.current.account {
+            return Err(DeviceListUpdateError::DifferentAccount);
+        }
+        if next.sequence < self.current.sequence
+            || (next.sequence == self.current.sequence && next != self.current)
+        {
+            return Err(DeviceListUpdateError::RollbackOrConflict);
+        }
+        if self
+            .current
+            .revoked
+            .iter()
+            .any(|id| next.revoked.binary_search(id).is_err())
+        {
+            return Err(DeviceListUpdateError::RevocationRemoved);
+        }
+        self.current = next;
+        Ok(())
+    }
+
+    /// Verifica la chiave TLS rispetto all'ultima lista fidata in memoria.
+    pub fn permits_device(&self, peer: &[u8; 32]) -> bool {
+        self.current.contains_device(peer)
+    }
+
+    /// Restituisce la lista che deve essere persistita dal proprietario.
+    pub fn current(&self) -> &DeviceList {
+        &self.current
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +252,47 @@ mod tests {
         for end in 0..encoded.len() {
             assert!(DeviceList::from_bytes(&encoded[..end]).is_err());
         }
+    }
+
+    #[test]
+    fn trusted_list_rejects_rollback_conflicts_and_forgotten_revocations() {
+        let account = SecretKey::generate();
+        let device = SecretKey::generate();
+        let cert = DeviceCert::issue(
+            &account,
+            device.public_key(),
+            "Laptop".into(),
+            DeviceRole::Member,
+            0,
+        )
+        .unwrap();
+        let id = device.public_key().to_bytes();
+        let old = DeviceList::issue(&account, 1, vec![cert], vec![]).unwrap();
+        let mut trusted = TrustedDeviceList::from_approved_friend(old.clone());
+        assert!(trusted.permits_device(&id));
+        assert_eq!(trusted.update(old.clone()), Ok(()));
+        let revoked = DeviceList::issue(&account, 2, vec![], vec![id]).unwrap();
+        assert_eq!(trusted.update(revoked), Ok(()));
+        assert!(!trusted.permits_device(&id));
+        assert_eq!(
+            trusted.update(old),
+            Err(DeviceListUpdateError::RollbackOrConflict)
+        );
+        let conflict = DeviceList::issue(&account, 2, vec![], vec![]).unwrap();
+        assert_eq!(
+            trusted.update(conflict),
+            Err(DeviceListUpdateError::RollbackOrConflict)
+        );
+        let forgotten = DeviceList::issue(&account, 3, vec![], vec![]).unwrap();
+        assert_eq!(
+            trusted.update(forgotten),
+            Err(DeviceListUpdateError::RevocationRemoved)
+        );
+        let other = DeviceList::issue(&SecretKey::generate(), 9, vec![], vec![]).unwrap();
+        assert_eq!(
+            trusted.update(other),
+            Err(DeviceListUpdateError::DifferentAccount)
+        );
+        assert_eq!(trusted.current().sequence(), 2);
     }
 }
