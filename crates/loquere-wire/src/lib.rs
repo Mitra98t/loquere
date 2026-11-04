@@ -5,6 +5,7 @@
 mod chat_frame;
 mod control_frame;
 mod frame;
+mod friend_request;
 mod gate;
 mod invite_grant;
 mod quic_config;
@@ -14,6 +15,7 @@ mod tls;
 pub use chat_frame::{ChatFrameDecoder, ChatFrameError, PendingChatFrame, encode_chat_message};
 pub use control_frame::{ControlHelloDecoder, encode_control_hello};
 pub use frame::{FrameDecoder, FrameError, encode_frame};
+pub use friend_request::{FriendRequest, FriendRequestDecoder, encode_friend_request};
 pub use gate::{
     GateDecision, GateError, SilentFilter, gate_initial_datagram, gate_key_id_for,
     is_quic_initial_packet,

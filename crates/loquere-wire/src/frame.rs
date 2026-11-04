@@ -39,6 +39,13 @@ pub struct FrameDecoder {
     failed: bool,
 }
 
+impl Drop for FrameDecoder {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.payload.zeroize();
+    }
+}
+
 impl FrameDecoder {
     /// Crea un decoder con un limite per singolo payload.
     pub fn new(max_len: usize) -> Self {

@@ -393,7 +393,9 @@ Tra due dispositivi c'è **una connessione QUIC** (ALPN `loquere/1`), che multip
 
 **D-40. Framing chat iniziale.** Sullo stream chat, ogni record è `lunghezza u32 big-endian ‖ versione u8 ‖ tipo u8 ‖ payload`; la lunghezza include versione, tipo e payload ed è al massimo 1 MiB. Versione `1`, tipo `1` indica un messaggio applicativo MLS serializzato; payload vuoto, versioni e tipi sconosciuti o record troncati sono errori che richiedono la chiusura dello stream. Il framing non autentica il contenuto: OpenMLS deve sempre verificarlo. La definizione non autorizza l'apertura della chat prima del controllo dello scopo della connessione (§8.3); altri messaggi MLS e sincronizzazione saranno specificati separatamente.
 
-**D-41. Primo controllo tra amici.** Il primo record dello stream di controllo usa `lunghezza u32 big-endian ‖ versione u8 ‖ tipo u8`, massimo 256 byte. La coppia `1, 1`, senza altri byte, rappresenta `Hello{}`. Record non validi o troncati richiedono la chiusura della connessione. `Hello` non prova l'amicizia: l'engine deve associare la chiave del peer autenticata da TLS a un dispositivo amico non revocato prima di autorizzare la chat. Gli altri scopi, inclusi gli inviti, restano da specificare e implementare.
+**D-41. Primo controllo tra amici.** Il primo record dello stream di controllo usa `lunghezza u32 big-endian ‖ versione u8 ‖ tipo u8`, massimo 256 byte per `Hello`. La coppia `1, 1`, senza altri byte, rappresenta `Hello{}`. Record non validi o troncati richiedono la chiusura della connessione. `Hello` non prova l'amicizia: l'engine deve associare la chiave del peer autenticata da TLS a un dispositivo amico non revocato prima di autorizzare la chat. Il primo contatto tramite invito è specificato in D-44.
+
+**D-44. Primo controllo per invito.** `FriendRequest` usa lo stesso prefisso u32 BE, payload `versione=1 ‖ tipo=2 ‖ token[16] ‖ DeviceCert`, massimo 4096 byte totali di payload. Il certificato non può essere vuoto; il ricevente lo verifica e confronta la sua chiave dispositivo con il peer TLS autenticato, quindi verifica il token e richiede conferma secondo §7.2. Il parser non autorizza nulla. Il profilo viene scambiato successivamente; gli altri scopi di connessione restano da specificare.
 
 - Keepalive: `PING` di QUIC; RTT e perdita vengono dalle statistiche della connessione.
 - Dimensione massima del datagramma: si parte da **1200 byte** (il minimo garantito da QUIC) con scoperta della MTU attiva.
@@ -1292,6 +1294,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Primo controllo amici | Record `Hello` versionato; autorizzazione separata sulla chiave TLS del dispositivo amico | §8.2, §8.3 (D-41) |
 | DeviceList firmata | Codifica canonica limitata, firma account e controlli di revoca; anti-rollback al chiamante | §6.4 (D-42) |
 | Consumo inviti | Prenotazione esclusiva e log cifrato con consumo persistito prima di FriendAccept | §7.2 (D-43) |
+| FriendRequest | Record di controllo versionato con token e DeviceCert; validazioni e consenso separati | §8.2 (D-44) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 
