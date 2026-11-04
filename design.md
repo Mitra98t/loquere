@@ -387,6 +387,8 @@ Tra due dispositivi c'è **una connessione QUIC** (ALPN `loquere/1`), che multip
 
 **D-40. Framing chat iniziale.** Sullo stream chat, ogni record è `lunghezza u32 big-endian ‖ versione u8 ‖ tipo u8 ‖ payload`; la lunghezza include versione, tipo e payload ed è al massimo 1 MiB. Versione `1`, tipo `1` indica un messaggio applicativo MLS serializzato; payload vuoto, versioni e tipi sconosciuti o record troncati sono errori che richiedono la chiusura dello stream. Il framing non autentica il contenuto: OpenMLS deve sempre verificarlo. La definizione non autorizza l'apertura della chat prima del controllo dello scopo della connessione (§8.3); altri messaggi MLS e sincronizzazione saranno specificati separatamente.
 
+**D-41. Primo controllo tra amici.** Il primo record dello stream di controllo usa `lunghezza u32 big-endian ‖ versione u8 ‖ tipo u8`, massimo 256 byte. La coppia `1, 1`, senza altri byte, rappresenta `Hello{}`. Record non validi o troncati richiedono la chiusura della connessione. `Hello` non prova l'amicizia: l'engine deve associare la chiave del peer autenticata da TLS a un dispositivo amico non revocato prima di autorizzare la chat. Gli altri scopi, inclusi gli inviti, restano da specificare e implementare.
+
 - Keepalive: `PING` di QUIC; RTT e perdita vengono dalle statistiche della connessione.
 - Dimensione massima del datagramma: si parte da **1200 byte** (il minimo garantito da QUIC) con scoperta della MTU attiva.
 - **0-RTT disattivato**: i dati 0-RTT sono rigiocabili, e il guadagno (un RTT alla riconnessione) non vale il rischio.
@@ -1280,6 +1282,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Persistenza MLS | Ripristino OpenMLS dall'ultimo snapshot autenticato; compattazione ogni 64 snapshot | §15.4, §16 (D-38) |
 | Derivazione chiavi storage | Chiavi specifiche per scopo HKDF-SHA256 derivate dal master key sbloccato | §6.1, §16 (D-39) |
 | Framing stream chat | Lunghezza u32 BE, versione e tipo, limite 1 MiB; contenuto autenticato da MLS | §8.2 (D-40) |
+| Primo controllo amici | Record `Hello` versionato; autorizzazione separata sulla chiave TLS del dispositivo amico | §8.2, §8.3 (D-41) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

@@ -3,6 +3,7 @@
 //! Macchine a stati sans-IO per il trasporto Loquere.
 
 mod chat_frame;
+mod control_frame;
 mod frame;
 mod gate;
 mod quic_config;
@@ -10,6 +11,7 @@ mod quic_node;
 mod tls;
 
 pub use chat_frame::{ChatFrameDecoder, ChatFrameError, PendingChatFrame, encode_chat_message};
+pub use control_frame::{ControlHelloDecoder, encode_control_hello};
 pub use frame::{FrameDecoder, FrameError, encode_frame};
 pub use gate::{
     GateDecision, GateError, SilentFilter, gate_initial_datagram, gate_key_id_for,
