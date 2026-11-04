@@ -754,7 +754,7 @@ mod tests {
         let plaintext = b"ciao da OpenMLS su QUIC";
         let ciphertext = alice.encrypt(plaintext).unwrap();
         assert!(!ciphertext.windows(plaintext.len()).any(|w| w == plaintext));
-        let frame = loquere_wire::encode_frame(&ciphertext, 1024).unwrap();
+        let frame = loquere_wire::encode_chat_message(&ciphertext).unwrap();
         assert_eq!(
             client
                 .node_mut()
@@ -842,7 +842,7 @@ mod tests {
             }
         }
         let received = received_frame.unwrap_or_else(|| panic!("frame non ricevuto: {trace:#?}"));
-        let mut decoder = loquere_wire::FrameDecoder::new(1024);
+        let mut decoder = loquere_wire::ChatFrameDecoder::new();
         let (consumed, decoded) = decoder.push(&received).unwrap();
         assert_eq!(consumed, received.len());
         let decoded = decoded.expect("frame incompleto");
