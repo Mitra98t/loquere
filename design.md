@@ -270,6 +270,8 @@ DeviceList {
 
 **D-42. Codifica DeviceList.** Dominio `loquere:device-list:v1\0`, `account_id` (32 B), `seq` u64 LE, conteggio dispositivi u16 LE, certificati preceduti da lunghezza u32 LE, conteggio revoche u16 LE, identificatori revocati da 32 B e firma Ed25519 dell'account sui byte precedenti. Certificati e revoche sono ordinati per identificatore, senza duplicati né dispositivi attivi revocati; massimo 256 elementi per elenco e 1 MiB complessivo. Il ricevente deve verificare certificati e firma e conservare la lista più recente per impedire rollback; a parità di sequenza accetta solo una lista identica e le revoche precedenti non possono essere rimosse. Una lista valida da sola non prova l'amicizia; la persistenza della fiducia è necessaria affinché la protezione sopravviva al riavvio.
 
+La prima implementazione conserva gli aggiornamenti di un amico già approvato in un log cifrato distinto e ne rivalida l'ordine alla riapertura. Questo protegge dai rollback ricevuti dalla rete dopo il riavvio, non dalla sostituzione o troncamento dell'intero log locale con una copia valida più vecchia: per tale minaccia serve un ancoraggio monotono separato.
+
 **Ruoli.** Un dispositivo **Admin** custodisce `IK` e può collegare e revocare dispositivi, creare inviti e firmare il profilo. Un dispositivo **Member** ha solo le proprie chiavi: chatta, chiama, fa da relay, ma se viene compromesso non può prendersi l'account. Predefinito: il primo dispositivo è Admin; i successivi sono Member salvo scelta esplicita; un nodo headless sempre acceso (§19.4) è **sempre** Member, perché è il più esposto.
 
 **Collegare un nuovo dispositivo:**

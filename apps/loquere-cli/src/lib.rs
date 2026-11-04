@@ -1,6 +1,9 @@
 //! Comandi CLI di Loquere e formattazione dei relativi risultati.
 
+mod friend_store;
 mod terminal;
+
+pub use friend_store::{FriendStore, FriendStoreError};
 
 use loquere_chat::{ChatError, Conversation, MemberWelcome};
 use loquere_identity::{Account, DeviceRole, IdentityError, Invitation, InviteOptions};
