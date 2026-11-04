@@ -1,4 +1,6 @@
-use crate::tls::{build_client_tls_config, build_server_tls_config};
+use crate::tls::{
+    build_client_tls_config, build_provisional_invite_server_tls_config, build_server_tls_config,
+};
 use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use hkdf::Hkdf;
@@ -38,6 +40,23 @@ pub fn build_quic_server_config(
     time_source: Arc<dyn quinn_proto::TimeSource>,
 ) -> Result<quinn_proto::ServerConfig, QuicConfigError> {
     let tls = build_server_tls_config(local_key, accepted_peers)?;
+    build_server_from_tls(tls, time_source)
+}
+
+/// Configurazione QUIC per primo contatto. Non usare senza gate d'invito
+/// verificato e applicazione obbligatoria delle restrizioni D-45.
+pub fn build_provisional_invite_quic_server_config(
+    local_key: Arc<SecretKey>,
+    time_source: Arc<dyn quinn_proto::TimeSource>,
+) -> Result<quinn_proto::ServerConfig, QuicConfigError> {
+    let tls = build_provisional_invite_server_tls_config(local_key)?;
+    build_server_from_tls(tls, time_source)
+}
+
+fn build_server_from_tls(
+    tls: rustls::ServerConfig,
+    time_source: Arc<dyn quinn_proto::TimeSource>,
+) -> Result<quinn_proto::ServerConfig, QuicConfigError> {
     let crypto = quinn_proto::crypto::rustls::QuicServerConfig::try_from(tls)
         .map_err(|_| QuicConfigError::CryptoConfiguration)?;
     let mut config =

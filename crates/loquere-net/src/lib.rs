@@ -621,6 +621,178 @@ mod tests {
     }
 
     #[test]
+    fn temporary_invite_gate_connects_unknown_device_and_receives_request() {
+        let inviter_key = Arc::new(SecretKey::generate());
+        let requester_key = Arc::new(SecretKey::generate());
+        let inviter_id = inviter_key.public_key().to_bytes();
+        let requester_id = requester_key.public_key().to_bytes();
+        let token = [0x37; 16];
+        let client_config =
+            build_quic_client_config(requester_key, inviter_key.public_key()).unwrap();
+        let server_config = Arc::new(
+            loquere_wire::build_provisional_invite_quic_server_config(
+                inviter_key,
+                Arc::new(FixedTime),
+            )
+            .unwrap(),
+        );
+        let loopback = SocketAddr::from(([127, 0, 0, 1], 0));
+        let make_socket = || {
+            UdpSocketAdapter::bind_with_ecn_handling(
+                loopback,
+                Duration::from_millis(2),
+                EcnHandling::IgnoreExplicitly,
+            )
+            .unwrap()
+        };
+        // Il filtro client è isolato e temporaneamente legato al DK dell'invito.
+        let mut client_ingress = UdpIngressFilter::new(inviter_id);
+        let mut server_ingress = UdpIngressFilter::new(inviter_id);
+        client_ingress
+            .authorize_peer_secret(&token, inviter_id)
+            .unwrap();
+        server_ingress
+            .authorize_peer_secret(&token, inviter_id)
+            .unwrap();
+        let mut client =
+            UdpQuicEndpoint::new(make_socket(), client_ingress, QuicNode::client([0x31; 32]));
+        let mut server = UdpQuicEndpoint::new(
+            make_socket(),
+            server_ingress,
+            QuicNode::server([0x32; 32], server_config),
+        );
+        let gate = gate_key_id_for(inviter_id, &token).unwrap();
+        let client_handle = client
+            .node_mut()
+            .connect(
+                std::time::Instant::now(),
+                server.local_addr().unwrap(),
+                "loquere",
+                client_config,
+                Some(gate),
+            )
+            .unwrap();
+        let mut client_buffer = vec![0; MAX_UDP_PAYLOAD];
+        let mut server_buffer = vec![0; MAX_UDP_PAYLOAD];
+        let start = std::time::Instant::now();
+        let mut client_connected = false;
+        let mut server_handle = None;
+        for tick in 0..100 {
+            let now = start + Duration::from_millis(tick * 10);
+            let output = client.poll(now);
+            client_connected |= output.events.iter().any(|event| matches!(event, loquere_wire::QuicEvent::Connected(handle) if *handle == client_handle));
+            for transmit in &output.datagrams {
+                client
+                    .send(transmit, Some((inviter_id, &token)), 1_000_000)
+                    .unwrap();
+            }
+            if let Some(output) = server
+                .receive_once(&mut server_buffer, now, 1_000_000)
+                .unwrap()
+            {
+                for transmit in &output.datagrams {
+                    server
+                        .send(transmit, Some((inviter_id, &token)), 1_000_000)
+                        .unwrap();
+                }
+                for event in output.events {
+                    if let loquere_wire::QuicEvent::Connected(handle) = event {
+                        server_handle = Some(handle);
+                    }
+                }
+            }
+            if let Some(output) = client
+                .receive_once(&mut client_buffer, now, 1_000_000)
+                .unwrap()
+            {
+                for transmit in &output.datagrams {
+                    client
+                        .send(transmit, Some((inviter_id, &token)), 1_000_000)
+                        .unwrap();
+                }
+                client_connected |= output.events.iter().any(|event| matches!(event, loquere_wire::QuicEvent::Connected(handle) if *handle == client_handle));
+            }
+            if client_connected && server_handle.is_some() {
+                break;
+            }
+        }
+        let server_handle = server_handle.expect("server provisional TLS non completato");
+        assert!(client_connected);
+        assert_eq!(
+            server.node_mut().authenticated_peer(server_handle),
+            Some(requester_id)
+        );
+        assert_eq!(
+            client.node_mut().authenticated_peer(client_handle),
+            Some(inviter_id)
+        );
+
+        let stream = client.node_mut().open_bi_stream(client_handle).unwrap();
+        let request =
+            loquere_wire::encode_friend_request(&token, b"certificato-da-validare").unwrap();
+        assert_eq!(
+            client
+                .node_mut()
+                .write_stream(client_handle, stream, &request)
+                .unwrap(),
+            request.len()
+        );
+        let mut incoming = None;
+        let mut session = loquere_wire::ProvisionalSession::new();
+        let mut received = false;
+        for tick in 100..200 {
+            let now = start + Duration::from_millis(tick * 10);
+            for transmit in client.poll(now).datagrams {
+                client
+                    .send(&transmit, Some((inviter_id, &token)), 1_000_000)
+                    .unwrap();
+            }
+            if let Some(output) = server
+                .receive_once(&mut server_buffer, now, 1_000_000)
+                .unwrap()
+            {
+                for transmit in &output.datagrams {
+                    server
+                        .send(transmit, Some((inviter_id, &token)), 1_000_000)
+                        .unwrap();
+                }
+                if output.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        loquere_wire::QuicEvent::Stream {
+                            event: quinn_proto::StreamEvent::Opened {
+                                dir: quinn_proto::Dir::Bi
+                            },
+                            ..
+                        }
+                    )
+                }) {
+                    incoming = Some(server.node_mut().accept_bi_stream(server_handle).unwrap());
+                }
+            }
+            if let Some(stream) = incoming {
+                let (read, output) = server
+                    .node_mut()
+                    .read_stream(now, server_handle, stream, MAX_UDP_PAYLOAD)
+                    .unwrap();
+                for transmit in &output.datagrams {
+                    server
+                        .send(transmit, Some((inviter_id, &token)), 1_000_000)
+                        .unwrap();
+                }
+                if let Some(request) = session.receive_control(&read.bytes).unwrap() {
+                    assert_eq!(request.token(), &token);
+                    assert_eq!(request.certificate(), b"certificato-da-validare");
+                    assert!(!session.is_approved());
+                    received = true;
+                    break;
+                }
+            }
+        }
+        assert!(received, "FriendRequest non ricevuto");
+    }
+
+    #[test]
     fn two_udp_endpoints_exchange_mls_message_over_gated_quic() {
         let client_key = Arc::new(SecretKey::generate());
         let server_key = Arc::new(SecretKey::generate());

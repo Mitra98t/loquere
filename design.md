@@ -407,6 +407,8 @@ Tra due dispositivi c'è **una connessione QUIC** (ALPN `loquere/1`), che multip
 
 **D-45. Eccezione provvisoria per l'invitato.** L'emittente dell'invito non conosce ancora la chiave del richiedente. Solo dopo che il gate ha verificato il token di un invito attivo, può instaurare TLS con una chiave Ed25519 grezza non ancora conosciuta, verificandone comunque la prova di possesso TLS. Tale sessione è provvisoria: ammette esclusivamente il primo `FriendRequest`, nessuna chat o altra attività; verifica `DeviceCert`, corrispondenza alla chiave TLS e token, quindi attende la conferma dell'utente. Il richiedente continua a verificare rigidamente la chiave dell'emittente presente nell'invito. Il consumo monouso deve essere persistito prima di `FriendAccept`. Le sessioni ordinarie restano soggette alla lista dispositivi autorizzati e alle revoche. Se il gate, il controllo dello scopo o i vincoli della sessione provvisoria non sono applicati, questa configurazione non deve essere utilizzata.
 
+**D-46. Gate temporaneo per il primo contatto.** Poiché l'emittente non conosce ancora il dispositivo del richiedente quando invia la risposta Initial, esclusivamente per la sessione d'invito entrambi i versi derivano il gate dal token e dal `DK` dell'emittente presente nell'invito. Il richiedente usa un filtro e un socket temporanei isolati per questa sessione; il TLS client verifica comunque esattamente il `DK` dell'emittente. La sessione server resta provvisoria e limitata come D-45. Questa eccezione non modifica il gate direzionale delle connessioni ordinarie e non rende pubblico il token.
+
 - chi inizia conosce già la chiave di chi risponde (dal link di invito, dalla `DeviceList` di un amico o dal biglietto di chiamata) e rifiuta qualunque altra chiave: niente "man in the middle";
 - 1 RTT per stabilire la connessione, forward secrecy grazie alle chiavi effimere di TLS 1.3;
 - suite preferita `TLS_CHACHA20_POLY1305_SHA256`, con AES-GCM ammesso dove c'è accelerazione hardware; provider crittografico `ring`;
@@ -1298,6 +1300,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Consumo inviti | Prenotazione esclusiva e log cifrato con consumo persistito prima di FriendAccept | §7.2 (D-43) |
 | FriendRequest | Record di controllo versionato con token e DeviceCert; validazioni e consenso separati | §8.2 (D-44) |
 | TLS primo contatto | Dopo gate valido, chiave richiedente provvisoria con prova di possesso; solo FriendRequest fino a verifica e consenso | §8.3 (D-45) |
+| Gate primo contatto | Entrambi i versi usano token e DK dell'emittente sul socket temporaneo dell'invitato | §8.3 (D-46) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

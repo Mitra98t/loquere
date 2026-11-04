@@ -25,7 +25,10 @@ pub use gate::{
 };
 pub use invite_grant::{InviteGrant, InviteGrantError};
 pub use provisional::{ProvisionalError, ProvisionalSession};
-pub use quic_config::{QuicConfigError, build_quic_client_config, build_quic_server_config};
+pub use quic_config::{
+    QuicConfigError, build_provisional_invite_quic_server_config, build_quic_client_config,
+    build_quic_server_config,
+};
 pub use quic_node::{
     QuicDatagramError, QuicEvent, QuicNode, QuicOutput, QuicStreamError, QuicStreamRead,
     QuicTransmit,
