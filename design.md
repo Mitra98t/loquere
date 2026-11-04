@@ -357,6 +357,8 @@ Lunghezza tipica: ~320 byte → ~510 caratteri base32. Sufficiente per un QR di 
 
 Se nessun candidato del link risponde (Alice offline o non raggiungibile), il nodo di Bob mette la richiesta **in coda** e riprova periodicamente, sfruttando anche eventuali amici comuni per trovare Alice (§10.2).
 
+**D-43. Consumo locale dell'invito.** Il nodo emittente conserva l'invito e gli eventi di consumo o revoca in un log cifrato dedicato, con chiave derivata dall'identità e dal token. Per un invito monouso, una sola richiesta può essere in attesa; il consumo viene sincronizzato su disco dopo la conferma e prima di inviare `FriendAccept`. La prenotazione in corso viene annullata al riavvio. Come per le liste amici, sostituire il log con una copia autentica più vecchia resta rilevabile solo con un ancoraggio monotono esterno, non ancora implementato.
+
 ### 7.3 Rimozione di un amico e blocco
 
 - **Rimuovi:** si cancella il contatto e si **ruota il proprio segreto di scoperta** `D`, ridistribuendolo agli amici rimasti e ai propri dispositivi. L'ex amico non può più trovare il tuo indirizzo tramite gossip.
@@ -1288,6 +1290,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Framing stream chat | Lunghezza u32 BE, versione e tipo, limite 1 MiB; contenuto autenticato da MLS | §8.2 (D-40) |
 | Primo controllo amici | Record `Hello` versionato; autorizzazione separata sulla chiave TLS del dispositivo amico | §8.2, §8.3 (D-41) |
 | DeviceList firmata | Codifica canonica limitata, firma account e controlli di revoca; anti-rollback al chiamante | §6.4 (D-42) |
+| Consumo inviti | Prenotazione esclusiva e log cifrato con consumo persistito prima di FriendAccept | §7.2 (D-43) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

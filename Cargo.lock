@@ -1107,6 +1107,7 @@ dependencies = [
  "loquere-crypto",
  "loquere-identity",
  "loquere-store",
+ "loquere-wire",
  "windows-sys",
  "zeroize",
 ]
