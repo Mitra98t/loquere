@@ -43,8 +43,28 @@ pub fn build_server_tls_config(
     local_key: Arc<SecretKey>,
     accepted_peers: impl IntoIterator<Item = [u8; 32]>,
 ) -> Result<rustls::ServerConfig, TlsConfigError> {
+    build_server_with_verifier(local_key, PeerVerifier::new(accepted_peers))
+}
+
+/// TLS provvisorio per primo contatto via invito (D-45).
+///
+/// Questa configurazione da sola NON autorizza la connessione: va usata solo
+/// dietro un gate che abbia verificato il token di invito e con accesso limitato
+/// al primo FriendRequest. La chiave è verificata per possesso, non per fiducia;
+/// il chiamante deve verificare DeviceCert, token e consenso prima di consentire
+/// qualsiasi attività. Non usare per connessioni tra amici già riconosciuti.
+pub fn build_provisional_invite_server_tls_config(
+    local_key: Arc<SecretKey>,
+) -> Result<rustls::ServerConfig, TlsConfigError> {
+    build_server_with_verifier(local_key, PeerVerifier::provisional())
+}
+
+fn build_server_with_verifier(
+    local_key: Arc<SecretKey>,
+    verifier: PeerVerifier,
+) -> Result<rustls::ServerConfig, TlsConfigError> {
     let cert = certified_key(local_key)?;
-    let verifier = Arc::new(PeerVerifier::new(accepted_peers));
+    let verifier = Arc::new(verifier);
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut config = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
@@ -118,6 +138,7 @@ impl Signer for LoquereSigner {
 #[derive(Debug)]
 struct PeerVerifier {
     allowed: HashSet<[u8; 32]>,
+    provisional: bool,
     root_hints: Vec<DistinguishedName>,
 }
 
@@ -125,6 +146,15 @@ impl PeerVerifier {
     fn new(keys: impl IntoIterator<Item = [u8; 32]>) -> Self {
         Self {
             allowed: keys.into_iter().collect(),
+            provisional: false,
+            root_hints: Vec::new(),
+        }
+    }
+
+    fn provisional() -> Self {
+        Self {
+            allowed: HashSet::new(),
+            provisional: true,
             root_hints: Vec::new(),
         }
     }
@@ -132,7 +162,7 @@ impl PeerVerifier {
     fn check_peer(&self, cert: &CertificateDer<'_>) -> Result<PublicKey, Error> {
         let public = public_key_from_spki(cert.as_ref())
             .ok_or(Error::InvalidCertificate(CertificateError::BadEncoding))?;
-        if !self.allowed.contains(&public.to_bytes()) {
+        if !self.provisional && !self.allowed.contains(&public.to_bytes()) {
             return Err(Error::InvalidCertificate(CertificateError::UnknownIssuer));
         }
         Ok(public)
@@ -353,5 +383,52 @@ mod tests {
             }
         }
         panic!("TLS 1.3 handshake did not complete");
+    }
+
+    #[test]
+    fn provisional_server_requires_raw_key_and_completes_possession_handshake() {
+        let client_secret = Arc::new(SecretKey::generate());
+        let server_secret = Arc::new(SecretKey::generate());
+        let client_public = client_secret.public_key();
+        let client_config =
+            Arc::new(build_client_tls_config(client_secret, server_secret.public_key()).unwrap());
+        let server_config =
+            Arc::new(build_provisional_invite_server_tls_config(server_secret).unwrap());
+        let mut client = rustls::ClientConnection::new(
+            client_config,
+            ServerName::try_from("loquere".to_owned()).unwrap(),
+        )
+        .unwrap();
+        let mut server = rustls::ServerConnection::new(server_config).unwrap();
+        for _ in 0..10 {
+            let mut outbound = Vec::new();
+            client.write_tls(&mut outbound).unwrap();
+            if !outbound.is_empty() {
+                server.read_tls(&mut Cursor::new(outbound)).unwrap();
+                server.process_new_packets().unwrap();
+            }
+            let mut inbound = Vec::new();
+            server.write_tls(&mut inbound).unwrap();
+            if !inbound.is_empty() {
+                client.read_tls(&mut Cursor::new(inbound)).unwrap();
+                client.process_new_packets().unwrap();
+            }
+            if !client.is_handshaking() && !server.is_handshaking() {
+                let presented = server.peer_certificates().unwrap();
+                assert_eq!(presented.len(), 1);
+                assert_eq!(
+                    public_key_from_spki(presented[0].as_ref()),
+                    Some(client_public)
+                );
+                let verifier = PeerVerifier::provisional();
+                assert!(
+                    verifier
+                        .check_peer(&CertificateDer::from(vec![1, 2, 3]))
+                        .is_err()
+                );
+                return;
+            }
+        }
+        panic!("provisional TLS handshake did not complete");
     }
 }

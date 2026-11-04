@@ -405,6 +405,8 @@ Tra due dispositivi c'è **una connessione QUIC** (ALPN `loquere/1`), che multip
 
 **D-05.** **TLS 1.3 con mutua autenticazione a chiave pubblica grezza** (RFC 7250, niente certificati X.509 né autorità di certificazione): ogni dispositivo si presenta con la propria chiave `DK` Ed25519. Il verificatore personalizzato di `rustls` accetta la chiave dell'altro solo se è un dispositivo non revocato di un amico (`DeviceList`), un proprio dispositivo, il dispositivo di un invito, o un partecipante del biglietto di chiamata.
 
+**D-45. Eccezione provvisoria per l'invitato.** L'emittente dell'invito non conosce ancora la chiave del richiedente. Solo dopo che il gate ha verificato il token di un invito attivo, può instaurare TLS con una chiave Ed25519 grezza non ancora conosciuta, verificandone comunque la prova di possesso TLS. Tale sessione è provvisoria: ammette esclusivamente il primo `FriendRequest`, nessuna chat o altra attività; verifica `DeviceCert`, corrispondenza alla chiave TLS e token, quindi attende la conferma dell'utente. Il richiedente continua a verificare rigidamente la chiave dell'emittente presente nell'invito. Il consumo monouso deve essere persistito prima di `FriendAccept`. Le sessioni ordinarie restano soggette alla lista dispositivi autorizzati e alle revoche. Se il gate, il controllo dello scopo o i vincoli della sessione provvisoria non sono applicati, questa configurazione non deve essere utilizzata.
+
 - chi inizia conosce già la chiave di chi risponde (dal link di invito, dalla `DeviceList` di un amico o dal biglietto di chiamata) e rifiuta qualunque altra chiave: niente "man in the middle";
 - 1 RTT per stabilire la connessione, forward secrecy grazie alle chiavi effimere di TLS 1.3;
 - suite preferita `TLS_CHACHA20_POLY1305_SHA256`, con AES-GCM ammesso dove c'è accelerazione hardware; provider crittografico `ring`;
@@ -1295,6 +1297,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | DeviceList firmata | Codifica canonica limitata, firma account e controlli di revoca; anti-rollback al chiamante | §6.4 (D-42) |
 | Consumo inviti | Prenotazione esclusiva e log cifrato con consumo persistito prima di FriendAccept | §7.2 (D-43) |
 | FriendRequest | Record di controllo versionato con token e DeviceCert; validazioni e consenso separati | §8.2 (D-44) |
+| TLS primo contatto | Dopo gate valido, chiave richiedente provvisoria con prova di possesso; solo FriendRequest fino a verifica e consenso | §8.3 (D-45) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

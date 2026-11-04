@@ -28,4 +28,7 @@ pub use quic_node::{
     QuicDatagramError, QuicEvent, QuicNode, QuicOutput, QuicStreamError, QuicStreamRead,
     QuicTransmit,
 };
-pub use tls::{TlsConfigError, build_client_tls_config, build_server_tls_config};
+pub use tls::{
+    TlsConfigError, build_client_tls_config, build_provisional_invite_server_tls_config,
+    build_server_tls_config,
+};
