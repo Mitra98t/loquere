@@ -1,6 +1,7 @@
 use crate::{AccountId, DeviceCert, DeviceList, IdentityError, take_array};
 use loquere_crypto::{PublicKey, SecretKey, Signature};
 use rand_core::{OsRng, RngCore};
+use zeroize::Zeroizing;
 
 const INVITE_DOMAIN: &[u8] = b"loquere:invite:v1\0";
 
@@ -23,15 +24,30 @@ pub struct InviteCandidate {
 }
 
 /// Invito firmato per il primo contatto tra due account.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct Invitation {
     certificate: DeviceCert,
-    token: [u8; 16],
+    token: Zeroizing<[u8; 16]>,
     expires_at: u32,
     options: InviteOptions,
     display_name: String,
     candidates: Vec<InviteCandidate>,
     signature: Signature,
+}
+
+impl core::fmt::Debug for Invitation {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("Invitation")
+            .field("certificate", &self.certificate)
+            .field("token", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .field("options", &self.options)
+            .field("display_name", &self.display_name)
+            .field("candidates", &self.candidates)
+            .field("signature", &self.signature)
+            .finish()
+    }
 }
 
 impl Invitation {
@@ -47,8 +63,8 @@ impl Invitation {
         if device_key.public_key() != certificate.device_id() || certificate.verify().is_err() {
             return Err(IdentityError::KeyMismatch);
         }
-        let mut token = [0u8; 16];
-        OsRng.fill_bytes(&mut token);
+        let mut token = Zeroizing::new([0u8; 16]);
+        OsRng.fill_bytes(&mut *token);
         let mut invitation = Self {
             certificate,
             token,
@@ -82,8 +98,8 @@ impl Invitation {
     }
 
     /// Token casuale che autorizza il primo contatto.
-    pub const fn token(&self) -> [u8; 16] {
-        self.token
+    pub fn token(&self) -> [u8; 16] {
+        *self.token
     }
 
     /// Istante Unix di scadenza; zero significa nessuna scadenza.
@@ -163,7 +179,7 @@ impl Invitation {
             return Err(IdentityError::KeyMismatch);
         }
         cursor = cert_end;
-        let token = take_array(bytes, &mut cursor)?;
+        let token = Zeroizing::new(take_array(bytes, &mut cursor)?);
         let expires_at = u32::from_le_bytes(take_array(bytes, &mut cursor)?);
         let flag_byte = take_array::<1>(bytes, &mut cursor)?[0];
         if flag_byte & !0b11 != 0 {
@@ -258,7 +274,7 @@ impl Invitation {
         bytes.extend_from_slice(&self.certificate.device_id().to_bytes());
         bytes.extend_from_slice(&cert_len.to_le_bytes());
         bytes.extend_from_slice(&cert);
-        bytes.extend_from_slice(&self.token);
+        bytes.extend_from_slice(self.token.as_slice());
         bytes.extend_from_slice(&self.expires_at.to_le_bytes());
         bytes.push(u8::from(self.options.single_use) | (u8::from(self.options.auto_accept) << 1));
         bytes.push(self.display_name.len() as u8);

@@ -347,6 +347,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(invite.verify_at(9_999), Ok(()));
+        let debug = format!("{invite:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains(&format!("{:?}", invite.token())));
         assert_eq!(invite.verify_at(10_001), Err(IdentityError::ExpiredInvite));
         assert_eq!(
             Invitation::parse_code(&invite.to_uri().unwrap()),
