@@ -1,4 +1,5 @@
 use std::process::ExitCode;
+use std::{collections::BTreeMap, io::Write};
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1)) {
@@ -125,6 +126,136 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             );
             Ok(())
         }
+        (Some("chat"), Some("key-package")) => {
+            let options =
+                parse_chat_options(args, &["--identity-file", "--state-file", "--output"])?;
+            let passphrase =
+                loquere_cli::prompt_existing_passphrase().map_err(|error| error.to_string())?;
+            let package = loquere_cli::create_chat_key_package(
+                required_option(&options, "--identity-file")?,
+                &passphrase,
+                required_option(&options, "--state-file")?,
+            )
+            .map_err(|error| error.to_string())?;
+            let output = required_option(&options, "--output")?;
+            write_new_file(output, &package)?;
+            println!(
+                "KeyPackage MLS salvato in {output}; trasferiscilo all'amministratore del gruppo."
+            );
+            Ok(())
+        }
+        (Some("chat"), Some("add-member")) => {
+            let options = parse_chat_options(
+                args,
+                &[
+                    "--identity-file",
+                    "--state-file",
+                    "--key-package",
+                    "--welcome-out",
+                    "--tree-out",
+                    "--commit-out",
+                ],
+            )?;
+            let package = std::fs::read(required_option(&options, "--key-package")?)
+                .map_err(|error| error.to_string())?;
+            let passphrase =
+                loquere_cli::prompt_existing_passphrase().map_err(|error| error.to_string())?;
+            let result = loquere_cli::add_chat_member(
+                required_option(&options, "--identity-file")?,
+                &passphrase,
+                required_option(&options, "--state-file")?,
+                &package,
+            )
+            .map_err(|error| error.to_string())?;
+            write_new_file(required_option(&options, "--welcome-out")?, &result.welcome)?;
+            write_new_file(
+                required_option(&options, "--tree-out")?,
+                &result.ratchet_tree,
+            )?;
+            write_new_file(required_option(&options, "--commit-out")?, &result.commit)?;
+            println!("Membro aggiunto; consegna Welcome, tree e commit secondo il flusso MLS.");
+            Ok(())
+        }
+        (Some("chat"), Some("join")) => {
+            let options = parse_chat_options(
+                args,
+                &["--identity-file", "--state-file", "--welcome", "--tree"],
+            )?;
+            let welcome = std::fs::read(required_option(&options, "--welcome")?)
+                .map_err(|error| error.to_string())?;
+            let tree = std::fs::read(required_option(&options, "--tree")?)
+                .map_err(|error| error.to_string())?;
+            let passphrase =
+                loquere_cli::prompt_existing_passphrase().map_err(|error| error.to_string())?;
+            let summary = loquere_cli::join_chat_state(
+                required_option(&options, "--identity-file")?,
+                &passphrase,
+                required_option(&options, "--state-file")?,
+                &welcome,
+                &tree,
+            )
+            .map_err(|error| error.to_string())?;
+            println!(
+                "Join MLS completato\nID: {}\nEpoch: {}",
+                summary.group_id, summary.epoch
+            );
+            Ok(())
+        }
+        (Some("chat"), Some("apply-commit")) => {
+            let options =
+                parse_chat_options(args, &["--identity-file", "--state-file", "--commit"])?;
+            let commit = std::fs::read(required_option(&options, "--commit")?)
+                .map_err(|error| error.to_string())?;
+            let passphrase =
+                loquere_cli::prompt_existing_passphrase().map_err(|error| error.to_string())?;
+            let summary = loquere_cli::apply_chat_commit(
+                required_option(&options, "--identity-file")?,
+                &passphrase,
+                required_option(&options, "--state-file")?,
+                &commit,
+            )
+            .map_err(|error| error.to_string())?;
+            println!("Commit MLS applicato; epoch {}", summary.epoch);
+            Ok(())
+        }
+        (Some("chat"), Some("send")) => {
+            let options = parse_chat_options(
+                args,
+                &["--identity-file", "--state-file", "--message", "--output"],
+            )?;
+            let passphrase =
+                loquere_cli::prompt_existing_passphrase().map_err(|error| error.to_string())?;
+            let ciphertext = loquere_cli::encrypt_chat_message(
+                required_option(&options, "--identity-file")?,
+                &passphrase,
+                required_option(&options, "--state-file")?,
+                required_option(&options, "--message")?.as_bytes(),
+            )
+            .map_err(|error| error.to_string())?;
+            let output = required_option(&options, "--output")?;
+            write_new_file(output, &ciphertext)?;
+            println!("Messaggio MLS cifrato in {output}; trasferisci il file al gruppo.");
+            Ok(())
+        }
+        (Some("chat"), Some("receive")) => {
+            let options =
+                parse_chat_options(args, &["--identity-file", "--state-file", "--input"])?;
+            let ciphertext = std::fs::read(required_option(&options, "--input")?)
+                .map_err(|error| error.to_string())?;
+            let passphrase =
+                loquere_cli::prompt_existing_passphrase().map_err(|error| error.to_string())?;
+            let plaintext = loquere_cli::decrypt_chat_message(
+                required_option(&options, "--identity-file")?,
+                &passphrase,
+                required_option(&options, "--state-file")?,
+                &ciphertext,
+            )
+            .map_err(|error| error.to_string())?;
+            let plaintext = String::from_utf8(plaintext)
+                .map_err(|_| "il testo decifrato non è UTF-8".to_owned())?;
+            println!("{plaintext}");
+            Ok(())
+        }
         (Some("--help" | "-h"), _) | (None, _) => {
             println!("{}", usage());
             Ok(())
@@ -133,30 +264,59 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     }
 }
 
-fn parse_chat_paths(mut args: impl Iterator<Item = String>) -> Result<(String, String), String> {
-    let mut identity_file = None;
-    let mut state_file = None;
-    while let Some(option) = args.next() {
-        let value = args
-            .next()
-            .ok_or_else(|| format!("valore mancante per {option}\n{}", usage()))?;
-        let slot = match option.as_str() {
-            "--identity-file" => &mut identity_file,
-            "--state-file" => &mut state_file,
-            _ => return Err(usage()),
-        };
-        if slot.replace(value).is_some() {
-            return Err(format!("opzione duplicata: {option}"));
-        }
-    }
+fn parse_chat_paths(args: impl Iterator<Item = String>) -> Result<(String, String), String> {
+    let options = parse_chat_options(args, &["--identity-file", "--state-file"])?;
     Ok((
-        identity_file.ok_or_else(usage)?,
-        state_file.ok_or_else(usage)?,
+        required_option(&options, "--identity-file")?.to_owned(),
+        required_option(&options, "--state-file")?.to_owned(),
     ))
 }
 
+fn parse_chat_options(
+    mut args: impl Iterator<Item = String>,
+    allowed: &[&str],
+) -> Result<BTreeMap<String, String>, String> {
+    let mut options = BTreeMap::new();
+    while let Some(option) = args.next() {
+        if !allowed.contains(&option.as_str()) {
+            return Err(usage());
+        }
+        let value = args
+            .next()
+            .ok_or_else(|| format!("valore mancante per {option}\n{}", usage()))?;
+        if options.insert(option.clone(), value).is_some() {
+            return Err(format!("opzione duplicata: {option}"));
+        }
+    }
+    Ok(options)
+}
+
+fn required_option<'a>(
+    options: &'a BTreeMap<String, String>,
+    key: &str,
+) -> Result<&'a str, String> {
+    options.get(key).map(String::as_str).ok_or_else(usage)
+}
+
+fn write_new_file(path: &str, bytes: &[u8]) -> Result<(), String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(|error| error.to_string())?;
+    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
 fn usage() -> String {
-    "uso: loquere-cli id new --name <nome-dispositivo> --output <file>\n     loquere-cli id show --file <file>\n     loquere-cli invite create --file <file> --name <nome> [--expires-in 7d]\n     loquere-cli invite inspect <URI-o-codice-invito>\n     loquere-cli chat init --identity-file <file> --state-file <file>\n     loquere-cli chat show --identity-file <file> --state-file <file>\n     loquere-cli --help".to_owned()
+    "uso: loquere-cli id new --name <nome-dispositivo> --output <file>\n     loquere-cli id show --file <file>\n     loquere-cli invite create --file <file> --name <nome> [--expires-in 7d]\n     loquere-cli invite inspect <URI-o-codice-invito>\n     loquere-cli chat init --identity-file <file> --state-file <file>\n     loquere-cli chat show --identity-file <file> --state-file <file>\n     loquere-cli chat key-package --identity-file <file> --state-file <file> --output <file>\n     loquere-cli chat add-member --identity-file <file> --state-file <file> --key-package <file> --welcome-out <file> --tree-out <file> --commit-out <file>\n     loquere-cli chat join --identity-file <file> --state-file <file> --welcome <file> --tree <file>\n     loquere-cli chat apply-commit --identity-file <file> --state-file <file> --commit <file>\n     loquere-cli chat send --identity-file <file> --state-file <file> --message <testo> --output <file>\n     loquere-cli chat receive --identity-file <file> --state-file <file> --input <file>\n     loquere-cli --help".to_owned()
 }
 
 fn parse_duration(value: &str) -> Result<u64, String> {
@@ -211,6 +371,15 @@ mod tests {
                 ]
                 .map(str::to_owned)
                 .into_iter()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_chat_options(
+                ["--state-file", "one", "--state-file", "two"]
+                    .map(str::to_owned)
+                    .into_iter(),
+                &["--state-file"]
             )
             .is_err()
         );

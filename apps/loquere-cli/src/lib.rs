@@ -2,7 +2,7 @@
 
 mod terminal;
 
-use loquere_chat::{ChatError, Conversation};
+use loquere_chat::{ChatError, Conversation, MemberWelcome};
 use loquere_identity::{Account, DeviceRole, IdentityError, Invitation, InviteOptions};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -187,6 +187,82 @@ pub fn inspect_chat_state(
 ) -> Result<ChatSummary, ChatFileError> {
     open_chat_state(identity_path, passphrase, state_path)
         .map(|conversation| chat_summary(&conversation))
+}
+
+/// Genera un KeyPackage MLS per un nuovo membro; lo stato privato resta nel
+/// file persistente locale, mentre i byte restituiti sono pubblicabili.
+pub fn create_chat_key_package(
+    identity_path: impl AsRef<Path>,
+    passphrase: &str,
+    state_path: impl AsRef<Path>,
+) -> Result<Vec<u8>, ChatFileError> {
+    open_chat_state(identity_path, passphrase, state_path)?
+        .key_package()
+        .map_err(ChatFileError::Chat)
+}
+
+/// Aggiunge un KeyPackage e restituisce commit, Welcome e ratchet tree MLS.
+pub fn add_chat_member(
+    identity_path: impl AsRef<Path>,
+    passphrase: &str,
+    state_path: impl AsRef<Path>,
+    key_package: &[u8],
+) -> Result<MemberWelcome, ChatFileError> {
+    open_chat_state(identity_path, passphrase, state_path)?
+        .add_member(key_package)
+        .map_err(ChatFileError::Chat)
+}
+
+/// Unisce al gruppo il dispositivo con KeyPackage già generato e persistito.
+pub fn join_chat_state(
+    identity_path: impl AsRef<Path>,
+    passphrase: &str,
+    state_path: impl AsRef<Path>,
+    welcome: &[u8],
+    ratchet_tree: &[u8],
+) -> Result<ChatSummary, ChatFileError> {
+    let pending = open_chat_state(identity_path, passphrase, state_path)?;
+    Conversation::join(pending, welcome, ratchet_tree)
+        .map(|conversation| chat_summary(&conversation))
+        .map_err(ChatFileError::Chat)
+}
+
+/// Applica un commit MLS ricevuto dai membri già presenti.
+pub fn apply_chat_commit(
+    identity_path: impl AsRef<Path>,
+    passphrase: &str,
+    state_path: impl AsRef<Path>,
+    commit: &[u8],
+) -> Result<ChatSummary, ChatFileError> {
+    let mut conversation = open_chat_state(identity_path, passphrase, state_path)?;
+    conversation
+        .process_commit(commit)
+        .map_err(ChatFileError::Chat)?;
+    Ok(chat_summary(&conversation))
+}
+
+/// Cifra un messaggio e restituisce il frame TLS-serializzato da trasferire.
+pub fn encrypt_chat_message(
+    identity_path: impl AsRef<Path>,
+    passphrase: &str,
+    state_path: impl AsRef<Path>,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, ChatFileError> {
+    open_chat_state(identity_path, passphrase, state_path)?
+        .encrypt(plaintext)
+        .map_err(ChatFileError::Chat)
+}
+
+/// Decifra e autentica un messaggio MLS ricevuto.
+pub fn decrypt_chat_message(
+    identity_path: impl AsRef<Path>,
+    passphrase: &str,
+    state_path: impl AsRef<Path>,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, ChatFileError> {
+    open_chat_state(identity_path, passphrase, state_path)?
+        .decrypt(ciphertext)
+        .map_err(ChatFileError::Chat)
 }
 
 fn chat_summary(conversation: &Conversation) -> ChatSummary {

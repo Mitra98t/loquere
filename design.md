@@ -1066,6 +1066,11 @@ loquere-cli id new --name "Alice" --output identity.loq # identità cifrata con 
 loquere-cli id show --file identity.loq          # verifica e mostra i dati pubblici dell'account
 loquere-cli chat init --identity-file identity.loq --state-file conversation.mls # crea un gruppo MLS locale cifrato
 loquere-cli chat show --identity-file identity.loq --state-file conversation.mls # riapre e verifica il gruppo
+loquere-cli chat key-package --identity-file identity.loq --state-file conversation.mls --output keypackage.bin
+loquere-cli chat add-member --identity-file identity.loq --state-file conversation.mls --key-package keypackage.bin --welcome-out welcome.bin --tree-out tree.bin --commit-out commit.bin
+loquere-cli chat join --identity-file identity.loq --state-file conversation.mls --welcome welcome.bin --tree tree.bin
+loquere-cli chat send --identity-file identity.loq --state-file conversation.mls --message "Ciao" --output message.bin
+loquere-cli chat receive --identity-file identity.loq --state-file conversation.mls --input message.bin
 loquere-cli device link                       # su un nuovo dispositivo: mostra il codice da approvare
 loquere-cli device approve "TCL-…"            # su un dispositivo Admin: approva, mostra il codice di verifica
 loquere-cli device list
@@ -1078,6 +1083,8 @@ loquere-cli send --to bob "ci sentiamo alle 18"
 loquere-cli call --to bob,carla --audio
 loquere-cli net status                        # candidati, NAT, relay, peer
 ```
+
+I comandi `chat` usano MLS vero e stato cifrato. Gli artefatti binari (`keypackage`, `welcome`, `tree`, `commit`, messaggio) sono trasferiti manualmente; non implementano ancora la consegna P2P automatica.
 
 ### 19.2 Canale di controllo JSON
 
