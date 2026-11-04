@@ -32,12 +32,14 @@ impl RecordLog {
     /// Apre o crea il log, decifra i record validi e scarta solo una coda
     /// chiaramente incompleta lasciata da un'interruzione durante la scrittura.
     pub fn open(path: impl AsRef<Path>, key: [u8; 32]) -> Result<OpenedLog, StoreError> {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path)?;
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(false).read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(path)?;
         let key = Zeroizing::new(key);
         let file_len = file.metadata()?.len();
         let mut offset = 0u64;
@@ -217,6 +219,17 @@ mod tests {
         assert_eq!(opened.log.next_sequence(), 2);
         assert_eq!(&*opened.records[0], b"primo");
         assert_eq!(&*opened.records[1], b"secondo");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn newly_created_log_is_private_to_the_user() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = TestFile::new();
+        let _opened = RecordLog::open(&path.0, [0x31; 32]).unwrap();
+        let mode = std::fs::metadata(&path.0).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]
