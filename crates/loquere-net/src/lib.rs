@@ -621,9 +621,22 @@ mod tests {
     }
 
     #[test]
-    fn two_udp_endpoints_complete_mutual_quic_handshake_with_gate() {
+    fn two_udp_endpoints_exchange_mls_message_over_gated_quic() {
         let client_key = Arc::new(SecretKey::generate());
         let server_key = Arc::new(SecretKey::generate());
+        // Il gruppo è predisposto fuori banda: qui si verifica soltanto la
+        // consegna del messaggio MLS, non il protocollo di amicizia/join.
+        let mut alice =
+            loquere_chat::Conversation::create(SecretKey::from_bytes(*client_key.to_bytes()))
+                .unwrap();
+        let mut bob_pending =
+            loquere_chat::Conversation::create(SecretKey::from_bytes(*server_key.to_bytes()))
+                .unwrap();
+        let package = bob_pending.key_package().unwrap();
+        let welcome = alice.add_member(&package).unwrap();
+        let mut bob =
+            loquere_chat::Conversation::join(bob_pending, &welcome.welcome, &welcome.ratchet_tree)
+                .unwrap();
         let client_config =
             build_quic_client_config(client_key.clone(), server_key.public_key()).unwrap();
         let server_config = Arc::new(
@@ -738,8 +751,10 @@ mod tests {
         // Dopo l'handshake, scambia un frame applicativo su uno stream QUIC
         // bidirezionale reale, mantenendo il prefisso del gate sui datagrammi.
         let stream = client.node_mut().open_bi_stream(client_handle).unwrap();
-        let payload = b"loquere-app-frame";
-        let frame = loquere_wire::encode_frame(payload, 1024).unwrap();
+        let plaintext = b"ciao da OpenMLS su QUIC";
+        let ciphertext = alice.encrypt(plaintext).unwrap();
+        assert!(!ciphertext.windows(plaintext.len()).any(|w| w == plaintext));
+        let frame = loquere_wire::encode_frame(&ciphertext, 1024).unwrap();
         assert_eq!(
             client
                 .node_mut()
@@ -830,7 +845,13 @@ mod tests {
         let mut decoder = loquere_wire::FrameDecoder::new(1024);
         let (consumed, decoded) = decoder.push(&received).unwrap();
         assert_eq!(consumed, received.len());
-        assert_eq!(decoded.as_deref(), Some(payload.as_slice()));
+        let decoded = decoded.expect("frame incompleto");
+        assert_eq!(decoded, ciphertext);
+        assert_eq!(bob.decrypt(&decoded).unwrap(), plaintext);
+        assert!(
+            bob.decrypt(&decoded).is_err(),
+            "MLS deve rifiutare il replay"
+        );
         decoder.finish().unwrap();
     }
 }

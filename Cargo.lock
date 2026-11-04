@@ -1136,6 +1136,7 @@ dependencies = [
 name = "loquere-net"
 version = "0.1.0"
 dependencies = [
+ "loquere-chat",
  "loquere-crypto",
  "loquere-wire",
  "quinn-proto",

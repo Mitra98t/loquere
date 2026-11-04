@@ -11,4 +11,5 @@ loquere-wire = { path = "../loquere-wire" }
 quinn-proto.workspace = true
 
 [dev-dependencies]
+loquere-chat = { path = "../loquere-chat" }
 loquere-crypto = { path = "../loquere-crypto" }
