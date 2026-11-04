@@ -769,7 +769,7 @@ mod tests {
             hello.len()
         );
         let mut incoming_control = None;
-        let mut hello_decoder = loquere_wire::ControlHelloDecoder::new();
+        let mut hello_decoder = loquere_wire::FirstControlDecoder::new();
         let mut hello_received = false;
         for tick in 100..200 {
             let now = start + Duration::from_millis(tick * 10);
@@ -816,9 +816,10 @@ mod tests {
                         .send(transmit, Some((client_device, &shared_secret)), 1_000_000)
                         .unwrap();
                 }
-                let (used, complete) = hello_decoder.push(&read.bytes).unwrap();
+                let (used, message) = hello_decoder.push(&read.bytes).unwrap();
                 assert_eq!(used, read.bytes.len());
-                if complete {
+                if let Some(message) = message {
+                    assert!(matches!(message, loquere_wire::FirstControl::Hello));
                     hello_received = true;
                     break;
                 }

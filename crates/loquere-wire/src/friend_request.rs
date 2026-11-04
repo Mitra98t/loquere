@@ -24,6 +24,81 @@ impl FriendRequest {
     }
 }
 
+fn parse_request(record: &[u8]) -> Result<FriendRequest, FrameError> {
+    if record.len() <= HEADER.len() + TOKEN_LEN || !record.starts_with(&HEADER) {
+        return Err(FrameError::Failed);
+    }
+    let mut token = Zeroizing::new([0; TOKEN_LEN]);
+    token.copy_from_slice(&record[2..2 + TOKEN_LEN]);
+    Ok(FriendRequest {
+        token,
+        certificate: record[2 + TOKEN_LEN..].to_vec(),
+    })
+}
+
+/// Tipo del primo messaggio, senza alcuna autorizzazione implicita.
+pub enum FirstControl {
+    /// Un peer già amico dichiara lo scopo della connessione.
+    Hello,
+    /// Un peer presenta un token d'invito e un certificato da verificare.
+    FriendRequest(FriendRequest),
+}
+
+/// Distingue il primo messaggio di controllo senza conoscere il tipo in anticipo.
+pub struct FirstControlDecoder {
+    inner: FrameDecoder,
+    done: bool,
+    failed: bool,
+}
+
+impl Default for FirstControlDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FirstControlDecoder {
+    /// Crea il parser del primo record di controllo.
+    pub fn new() -> Self {
+        Self {
+            inner: FrameDecoder::new(MAX_RECORD),
+            done: false,
+            failed: false,
+        }
+    }
+
+    /// Restituisce un messaggio al massimo e lascia i byte successivi al chiamante.
+    pub fn push(&mut self, bytes: &[u8]) -> Result<(usize, Option<FirstControl>), FrameError> {
+        if self.done || self.failed {
+            return Err(FrameError::Failed);
+        }
+        let (used, record) = self.inner.push(bytes).inspect_err(|_| self.failed = true)?;
+        let Some(record) = record else {
+            return Ok((used, None));
+        };
+        let record = Zeroizing::new(record);
+        let message = if record.as_slice() == [1, 1] {
+            FirstControl::Hello
+        } else {
+            FirstControl::FriendRequest(parse_request(&record).inspect_err(|_| self.failed = true)?)
+        };
+        self.done = true;
+        Ok((used, Some(message)))
+    }
+
+    /// Verifica che sia arrivato il primo record completo.
+    pub fn finish(&mut self) -> Result<(), FrameError> {
+        if self.failed {
+            return Err(FrameError::Failed);
+        }
+        if !self.done {
+            self.failed = true;
+            return Err(FrameError::Truncated);
+        }
+        Ok(())
+    }
+}
+
 /// Codifica un FriendRequest. I byte restituiti contengono il token segreto.
 pub fn encode_friend_request(
     token: &[u8; TOKEN_LEN],
@@ -77,15 +152,9 @@ impl FriendRequestDecoder {
             return Ok((used, None));
         };
         let record = Zeroizing::new(record);
-        if record.len() <= HEADER.len() + TOKEN_LEN || !record.starts_with(&HEADER) {
-            self.failed = true;
-            return Err(FrameError::Failed);
-        }
-        let mut token = Zeroizing::new([0; TOKEN_LEN]);
-        token.copy_from_slice(&record[2..2 + TOKEN_LEN]);
-        let certificate = record[2 + TOKEN_LEN..].to_vec();
+        let request = parse_request(&record).inspect_err(|_| self.failed = true)?;
         self.done = true;
-        Ok((used, Some(FriendRequest { token, certificate })))
+        Ok((used, Some(request)))
     }
 
     /// Rifiuta la chiusura se il record non è completo.
@@ -133,5 +202,31 @@ mod tests {
         let mut decoder = FriendRequestDecoder::new();
         decoder.push(&[0, 0, 0]).unwrap();
         assert_eq!(decoder.finish(), Err(FrameError::Truncated));
+    }
+
+    #[test]
+    fn first_control_discriminates_and_rejects_unknown_messages() {
+        let mut decoder = FirstControlDecoder::new();
+        let hello = crate::encode_control_hello();
+        let (_, message) = decoder.push(&hello).unwrap();
+        assert!(matches!(message, Some(FirstControl::Hello)));
+        assert!(decoder.finish().is_ok());
+        let mut decoder = FirstControlDecoder::new();
+        let request = encode_friend_request(&[4; 16], b"cert").unwrap();
+        let (_, message) = decoder.push(&request).unwrap();
+        match message {
+            Some(FirstControl::FriendRequest(request)) => {
+                assert_eq!(request.token(), &[4; 16]);
+                assert_eq!(request.certificate(), b"cert");
+            }
+            _ => panic!("tipo errato"),
+        }
+        let mut decoder = FirstControlDecoder::new();
+        assert!(
+            decoder
+                .push(&encode_frame(&[1, 1, 0], MAX_RECORD).unwrap())
+                .is_err()
+        );
+        assert!(decoder.finish().is_err());
     }
 }
