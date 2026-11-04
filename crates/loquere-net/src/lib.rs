@@ -622,11 +622,24 @@ mod tests {
 
     #[test]
     fn temporary_invite_gate_connects_unknown_device_and_receives_request() {
-        let inviter_key = Arc::new(SecretKey::generate());
-        let requester_key = Arc::new(SecretKey::generate());
+        let inviter = loquere_identity::Account::create("Invitante".into(), 1).unwrap();
+        let requester = loquere_identity::Account::create("Richiedente".into(), 1).unwrap();
+        let invitation = inviter
+            .create_invite(
+                "Invitante".into(),
+                0,
+                loquere_identity::InviteOptions {
+                    single_use: true,
+                    auto_accept: false,
+                },
+                vec![],
+            )
+            .unwrap();
+        let inviter_key = Arc::new(SecretKey::from_bytes(*inviter.device_signing_key()));
+        let requester_key = Arc::new(SecretKey::from_bytes(*requester.device_signing_key()));
         let inviter_id = inviter_key.public_key().to_bytes();
         let requester_id = requester_key.public_key().to_bytes();
-        let token = [0x37; 16];
+        let token = invitation.token();
         let client_config =
             build_quic_client_config(requester_key, inviter_key.public_key()).unwrap();
         let server_config = Arc::new(
@@ -729,7 +742,8 @@ mod tests {
 
         let stream = client.node_mut().open_bi_stream(client_handle).unwrap();
         let request =
-            loquere_wire::encode_friend_request(&token, b"certificato-da-validare").unwrap();
+            loquere_wire::encode_friend_request(&token, &requester.device_cert().to_bytes())
+                .unwrap();
         assert_eq!(
             client
                 .node_mut()
@@ -782,7 +796,10 @@ mod tests {
                 }
                 if let Some(request) = session.receive_control(&read.bytes).unwrap() {
                     assert_eq!(request.token(), &token);
-                    assert_eq!(request.certificate(), b"certificato-da-validare");
+                    let cert =
+                        loquere_identity::DeviceCert::from_bytes(request.certificate()).unwrap();
+                    assert_eq!(cert.account_id(), requester.account_id());
+                    assert_eq!(cert.device_id().to_bytes(), requester_id);
                     assert!(!session.is_approved());
                     received = true;
                     break;

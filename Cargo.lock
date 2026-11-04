@@ -1140,6 +1140,7 @@ version = "0.1.0"
 dependencies = [
  "loquere-chat",
  "loquere-crypto",
+ "loquere-identity",
  "loquere-wire",
  "quinn-proto",
 ]
