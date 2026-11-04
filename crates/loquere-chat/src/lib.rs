@@ -334,11 +334,21 @@ impl Conversation {
         let snapshot = encode_snapshot(self.group.group_id().as_slice(), &entries)?;
         log.append(&snapshot)
             .map_err(|error| ChatError::Store(error.to_string()))?;
+        let should_compact = log.next_sequence() >= SNAPSHOTS_BEFORE_COMPACTION;
+        drop(entries);
+        if should_compact {
+            let log = self.persistence.take().ok_or(ChatError::InvalidSnapshot)?;
+            self.persistence = Some(
+                log.compact()
+                    .map_err(|error| ChatError::Store(error.to_string()))?,
+            );
+        }
         Ok(())
     }
 }
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"LQMLS\0\0\x01";
+const SNAPSHOTS_BEFORE_COMPACTION: u64 = 64;
 
 fn open_state_log(path: impl AsRef<Path>, key: [u8; 32]) -> Result<RecordLog, ChatError> {
     let path = path.as_ref();
@@ -529,6 +539,9 @@ mod tests {
         let mut bob = Conversation::create(SecretKey::generate()).unwrap();
         let ciphertext = alice.encrypt(b"before restart").unwrap();
         assert!(!ciphertext.is_empty());
+        for _ in 0..64 {
+            alice.encrypt(b"snapshot compaction test").unwrap();
+        }
         let epoch = alice.epoch();
         drop(alice);
 

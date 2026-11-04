@@ -5,11 +5,13 @@
 use loquere_crypto::{CryptoError, SealedBox};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use zeroize::Zeroizing;
 
 const RECORD_AAD: &[u8] = b"loquere:store-record:v1\0";
 const MAX_RECORD_SIZE: usize = 16 * 1024 * 1024;
+static NEXT_COMPACTION_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// Log aperto; ogni record viene cifrato con un nonce indipendente e legato alla
 /// sua posizione tramite i dati associati autenticati.
@@ -18,6 +20,8 @@ pub struct RecordLog {
     key: Zeroizing<[u8; 32]>,
     next_sequence: u64,
     poisoned: bool,
+    path: PathBuf,
+    latest_record: Option<Zeroizing<Vec<u8>>>,
 }
 
 /// Log aperto e record decifrati in ordine di sequenza.
@@ -39,7 +43,8 @@ impl RecordLog {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options.open(path)?;
+        let path = path.as_ref().to_path_buf();
+        let mut file = options.open(&path)?;
         let key = Zeroizing::new(key);
         let file_len = file.metadata()?.len();
         let mut offset = 0u64;
@@ -82,12 +87,15 @@ impl RecordLog {
             file.sync_data()?;
         }
         file.seek(SeekFrom::End(0))?;
+        let latest_record = records.last().map(|record| Zeroizing::new(record.to_vec()));
         Ok(OpenedLog {
             log: Self {
                 file,
                 key,
                 next_sequence: sequence,
                 poisoned: false,
+                path,
+                latest_record,
             },
             records,
         })
@@ -121,7 +129,68 @@ impl RecordLog {
             return Err(StoreError::Io(error));
         }
         self.next_sequence = next_sequence;
+        self.latest_record = Some(Zeroizing::new(plaintext.to_vec()));
         Ok(sequence)
+    }
+
+    /// Compatta il log conservando solo l'ultimo record autenticato.
+    /// Scrive e sincronizza prima un file temporaneo, quindi lo sostituisce:
+    /// un'interruzione prima della rinomina lascia intatto il log precedente.
+    pub fn compact(self) -> Result<Self, StoreError> {
+        if self.poisoned {
+            return Err(StoreError::NeedsRecovery);
+        }
+        let parent = self
+            .path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let file_name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("loquere-log");
+        let sequence = NEXT_COMPACTION_TEMP.fetch_add(1, Ordering::Relaxed);
+        let temporary_path = parent.join(format!(
+            ".{file_name}.{}.{}.compact",
+            std::process::id(),
+            sequence
+        ));
+        let mut temporary_options = OpenOptions::new();
+        temporary_options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            temporary_options.mode(0o600);
+        }
+        temporary_options.open(&temporary_path)?;
+
+        let Self {
+            file,
+            key,
+            path,
+            latest_record,
+            ..
+        } = self;
+        file.sync_all()?;
+        drop(file);
+
+        let rewrite = (|| {
+            let mut replacement = Self::open(&temporary_path, *key)?.log;
+            if let Some(record) = latest_record.as_deref() {
+                replacement.append(record)?;
+            }
+            drop(replacement);
+            std::fs::rename(&temporary_path, &path)?;
+            #[cfg(unix)]
+            File::open(parent)?.sync_all()?;
+            Ok::<(), StoreError>(())
+        })();
+        if let Err(error) = rewrite {
+            let _ = std::fs::remove_file(&temporary_path);
+            return Err(error);
+        }
+        Self::open(&path, *key).map(|opened| opened.log)
     }
 
     /// Numero di sequenza del prossimo record.
@@ -219,6 +288,25 @@ mod tests {
         assert_eq!(opened.log.next_sequence(), 2);
         assert_eq!(&*opened.records[0], b"primo");
         assert_eq!(&*opened.records[1], b"secondo");
+    }
+
+    #[test]
+    fn compaction_preserves_latest_record_and_resets_sequence() {
+        let path = TestFile::new();
+        let key = [0x61; 32];
+        let mut log = RecordLog::open(&path.0, key).unwrap().log;
+        log.append(b"obsolete snapshot one").unwrap();
+        log.append(b"obsolete snapshot two").unwrap();
+        log.append(b"latest snapshot").unwrap();
+
+        let compacted = log.compact().unwrap();
+        assert_eq!(compacted.next_sequence(), 1);
+        drop(compacted);
+
+        let reopened = RecordLog::open(&path.0, key).unwrap();
+        assert_eq!(reopened.records.len(), 1);
+        assert_eq!(&*reopened.records[0], b"latest snapshot");
+        assert_eq!(reopened.log.next_sequence(), 1);
     }
 
     #[cfg(unix)]
