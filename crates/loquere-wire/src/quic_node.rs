@@ -224,13 +224,12 @@ impl QuicNode {
         let mut output = QuicOutput::default();
         let handles: Vec<_> = self.connections.keys().copied().collect();
         for handle in handles {
-            if let Some(connection) = self.connections.get_mut(&handle) {
-                if connection
+            if let Some(connection) = self.connections.get_mut(&handle)
+                && connection
                     .poll_timeout()
                     .is_some_and(|deadline| deadline <= now)
-                {
-                    connection.handle_timeout(now);
-                }
+            {
+                connection.handle_timeout(now);
             }
         }
         self.pump(now, &mut output);

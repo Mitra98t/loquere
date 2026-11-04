@@ -1,0 +1,15 @@
+[package]
+name = "loquere-chat"
+description = "Conversazioni Loquere basate su MLS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+loquere-crypto = { path = "../loquere-crypto" }
+openmls.workspace = true
+openmls_basic_credential.workspace = true
+openmls_rust_crypto.workspace = true
+openmls_traits.workspace = true
+zeroize.workspace = true

@@ -7,6 +7,7 @@ members = [
     "crates/loquere-wire",
     "crates/loquere-sim",
     "crates/loquere-net",
+    "crates/loquere-chat",
     "apps/loquere-cli",
 ]
 
@@ -14,7 +15,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.85"
+rust-version = "1.91"
 
 [workspace.dependencies]
 argon2 = "0.5"
@@ -24,6 +25,10 @@ chacha20poly1305 = "0.10"
 ed25519-dalek = { version = "2.2", features = ["rand_core", "zeroize"] }
 hkdf = "0.12"
 libc = "0.2"
+openmls = { version = "0.9.2", default-features = false, features = ["openmls_rust_crypto"] }
+openmls_basic_credential = "0.6.0"
+openmls_rust_crypto = "0.6.0"
+openmls_traits = "0.6.0"
 quinn-proto = { version = "0.11.19", default-features = false, features = ["rustls-ring"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 rustls = { version = "0.23.36", default-features = false, features = ["std", "ring"] }
