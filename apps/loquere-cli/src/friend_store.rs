@@ -1,7 +1,8 @@
 //! Persistenza locale di una lista dispositivi di un amico già approvato.
 
 use loquere_identity::{
-    AccountId, DeviceList, DeviceListUpdateError, IdentityError, TrustedDeviceList,
+    Account, AccountId, DeviceList, DeviceListUpdateError, IdentityError, Invitation,
+    TrustedDeviceList,
 };
 use loquere_store::{RecordLog, StoreError};
 use std::path::Path;
@@ -28,6 +29,34 @@ pub struct FriendStore {
 }
 
 impl FriendStore {
+    /// Dopo la conferma esplicita dell'utente, valida invito, peer TLS e lista
+    /// e salva la fiducia con una chiave derivata dedicata a questo account.
+    /// Il chiamante resta responsabile di token, consenso e flusso FriendAccept.
+    pub fn create_from_approved_invitation(
+        path: impl AsRef<Path>,
+        owner: &Account,
+        invite: &Invitation,
+        now: u32,
+        authenticated_peer: &[u8; 32],
+        devices: DeviceList,
+    ) -> Result<Self, FriendStoreError> {
+        invite
+            .validate_peer_list(now, authenticated_peer, &devices)
+            .map_err(FriendStoreError::Identity)?;
+        let key = friend_storage_key(owner, devices.account_id())?;
+        Self::create(path, *key, devices)
+    }
+
+    /// Riapre la fiducia di un account noto con la chiave derivata locale.
+    pub fn open_for_account(
+        path: impl AsRef<Path>,
+        owner: &Account,
+        friend: AccountId,
+    ) -> Result<Self, FriendStoreError> {
+        let key = friend_storage_key(owner, friend)?;
+        Self::open(path, *key, friend)
+    }
+
     /// Inizializza un log vuoto con una lista approvata esplicitamente.
     /// Non usare per approvare automaticamente un invito ricevuto.
     pub fn create(
@@ -101,11 +130,22 @@ impl FriendStore {
     }
 }
 
+fn friend_storage_key(
+    owner: &Account,
+    friend: AccountId,
+) -> Result<zeroize::Zeroizing<[u8; 32]>, FriendStoreError> {
+    let mut purpose = b"loquere:friend-store:v1\0".to_vec();
+    purpose.extend_from_slice(&friend.to_bytes());
+    owner
+        .derive_storage_key(&purpose)
+        .map_err(FriendStoreError::Identity)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use loquere_crypto::SecretKey;
-    use loquere_identity::{DeviceCert, DeviceRole};
+    use loquere_identity::{DeviceCert, DeviceRole, InviteOptions};
 
     #[test]
     fn revocation_survives_restart_and_rejects_old_list() {
@@ -149,6 +189,57 @@ mod tests {
             )
             .is_err()
         );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn approved_invite_is_bound_to_peer_and_owner_key() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "loquere-friend-invite-{}-{nonce}.log",
+            std::process::id()
+        ));
+        let owner = Account::create("Owner".into(), 1).unwrap();
+        let friend = Account::create("Friend".into(), 1).unwrap();
+        let invite = friend
+            .create_invite(
+                "Friend".into(),
+                100,
+                InviteOptions {
+                    single_use: true,
+                    auto_accept: false,
+                },
+                vec![],
+            )
+            .unwrap();
+        let list = friend.initial_device_list().unwrap();
+        let peer = friend.device_public_key().to_bytes();
+        assert!(
+            FriendStore::create_from_approved_invitation(
+                &path,
+                &owner,
+                &invite,
+                50,
+                &[0; 32],
+                list.clone()
+            )
+            .is_err()
+        );
+        assert!(!path.exists());
+        let store =
+            FriendStore::create_from_approved_invitation(&path, &owner, &invite, 50, &peer, list)
+                .unwrap();
+        assert!(store.permits_device(&peer));
+        drop(store);
+        let reopened = FriendStore::open_for_account(&path, &owner, friend.account_id()).unwrap();
+        assert!(reopened.permits_device(&peer));
+        drop(reopened);
+        let other = Account::create("Other".into(), 1).unwrap();
+        assert!(FriendStore::open_for_account(&path, &other, friend.account_id()).is_err());
+        assert!(FriendStore::open_for_account(&path, &owner, other.account_id()).is_err());
         std::fs::remove_file(path).unwrap();
     }
 }
