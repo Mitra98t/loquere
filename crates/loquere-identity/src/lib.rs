@@ -132,6 +132,71 @@ mod tests {
     }
 
     #[test]
+    fn invitation_list_and_tls_peer_must_match_without_granting_trust() {
+        let alice = Account::create("Alice".into(), 10).unwrap();
+        let other = Account::create("Other".into(), 10).unwrap();
+        let invite = alice
+            .create_invite(
+                "Alice".into(),
+                100,
+                InviteOptions {
+                    single_use: true,
+                    auto_accept: false,
+                },
+                vec![],
+            )
+            .unwrap();
+        let list = alice.initial_device_list().unwrap();
+        let alice_id = alice.device_public_key().to_bytes();
+        assert_eq!(invite.validate_peer_list(100, &alice_id, &list), Ok(()));
+        assert_eq!(
+            invite.validate_peer_list(101, &alice_id, &list),
+            Err(IdentityError::ExpiredInvite)
+        );
+        assert_eq!(
+            invite.validate_peer_list(50, &other.device_public_key().to_bytes(), &list),
+            Err(IdentityError::KeyMismatch)
+        );
+        assert_eq!(
+            invite.validate_peer_list(50, &alice_id, &other.initial_device_list().unwrap()),
+            Err(IdentityError::KeyMismatch)
+        );
+        let empty = DeviceList::issue(&SecretKey::generate(), 0, vec![], vec![]).unwrap();
+        assert_eq!(
+            invite.validate_peer_list(50, &alice_id, &empty),
+            Err(IdentityError::KeyMismatch)
+        );
+        let account_key = SecretKey::generate();
+        let device_key = SecretKey::generate();
+        let cert = DeviceCert::issue(
+            &account_key,
+            device_key.public_key(),
+            "revoked".into(),
+            DeviceRole::Member,
+            0,
+        )
+        .unwrap();
+        let revoked_invite = Invitation::issue(
+            &device_key,
+            cert,
+            "revoked".into(),
+            0,
+            InviteOptions {
+                single_use: true,
+                auto_accept: false,
+            },
+            vec![],
+        )
+        .unwrap();
+        let device_id = device_key.public_key().to_bytes();
+        let revoked = DeviceList::issue(&account_key, 1, vec![], vec![device_id]).unwrap();
+        assert_eq!(
+            revoked_invite.validate_peer_list(1, &device_id, &revoked),
+            Err(IdentityError::KeyMismatch)
+        );
+    }
+
+    #[test]
     fn account_id_base32_is_52_character_canonical_round_trip() {
         let account_id = AccountId(SecretKey::from_bytes([0x5a; 32]).public_key().to_bytes());
         let encoded = account_id.to_base32();

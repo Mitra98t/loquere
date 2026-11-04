@@ -1,4 +1,4 @@
-use crate::{AccountId, DeviceCert, IdentityError, take_array};
+use crate::{AccountId, DeviceCert, DeviceList, IdentityError, take_array};
 use loquere_crypto::{PublicKey, SecretKey, Signature};
 use rand_core::{OsRng, RngCore};
 
@@ -109,6 +109,30 @@ impl Invitation {
     /// Account identificato dall'invito.
     pub const fn account_id(&self) -> AccountId {
         self.certificate.account_id()
+    }
+
+    /// Identificatore del dispositivo che ha firmato l'invito.
+    pub fn device_id(&self) -> PublicKey {
+        self.certificate.device_id()
+    }
+
+    /// Verifica che l'invito ancora valido, il peer TLS autenticato e la lista
+    /// firmata si riferiscano allo stesso dispositivo attivo dell'account.
+    /// Non approva l'amicizia e non verifica il consumo del token o il consenso.
+    pub fn validate_peer_list(
+        &self,
+        now: u32,
+        authenticated_peer: &[u8; 32],
+        devices: &DeviceList,
+    ) -> Result<(), IdentityError> {
+        self.verify_at(now)?;
+        if devices.account_id() != self.account_id()
+            || self.device_id().to_bytes() != *authenticated_peer
+            || !devices.contains_device(authenticated_peer)
+        {
+            return Err(IdentityError::KeyMismatch);
+        }
+        Ok(())
     }
 
     /// Codifica binaria canonica, inclusa la firma del dispositivo.
