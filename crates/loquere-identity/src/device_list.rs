@@ -95,11 +95,24 @@ impl DeviceList {
 
     /// Decodifica e verifica lista, certificati e firma dell'account.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, IdentityError> {
-        if bytes.len() > MAX_BYTES || !bytes.starts_with(DOMAIN) {
+        if bytes.len() > MAX_BYTES
+            || bytes.len() < DOMAIN.len() + 32 + 8 + 2 + 2 + 64
+            || !bytes.starts_with(DOMAIN)
+        {
             return Err(IdentityError::InvalidEncoding);
         }
         let mut cursor = DOMAIN.len();
         let account = AccountId::from_bytes(take_array(bytes, &mut cursor)?)?;
+        // Autentica la lista prima di decodificare o verificare i certificati:
+        // un mittente non autorizzato non può imporre fino a 256 verifiche.
+        let signed_len = bytes.len() - 64;
+        let signature_bytes: [u8; 64] = bytes[signed_len..]
+            .try_into()
+            .map_err(|_| IdentityError::InvalidEncoding)?;
+        let signature = Signature::from_bytes(signature_bytes);
+        account
+            .public_key()?
+            .verify(&bytes[..signed_len], &signature)?;
         let sequence = u64::from_le_bytes(take_array(bytes, &mut cursor)?);
         let count = u16::from_le_bytes(take_array(bytes, &mut cursor)?) as usize;
         if count > MAX_DEVICES {
@@ -127,8 +140,7 @@ impl DeviceList {
         for _ in 0..count {
             revoked.push(take_array(bytes, &mut cursor)?);
         }
-        let signature = Signature::from_bytes(take_array(bytes, &mut cursor)?);
-        if cursor != bytes.len() {
+        if cursor != signed_len {
             return Err(IdentityError::InvalidEncoding);
         }
         let list = Self {
@@ -139,9 +151,6 @@ impl DeviceList {
             signature,
         };
         list.validate()?;
-        list.account
-            .public_key()?
-            .verify(&bytes[..bytes.len() - 64], &signature)?;
         Ok(list)
     }
 
@@ -294,5 +303,21 @@ mod tests {
             Err(DeviceListUpdateError::DifferentAccount)
         );
         assert_eq!(trusted.current().sequence(), 2);
+    }
+
+    #[test]
+    fn signed_but_malformed_list_is_rejected_after_signature_check() {
+        let account = SecretKey::generate();
+        let list = DeviceList::issue(&account, 1, vec![], vec![]).unwrap();
+        let mut encoded = list.to_bytes();
+        let count_offset = DOMAIN.len() + 32 + 8;
+        encoded[count_offset..count_offset + 2].copy_from_slice(&257u16.to_le_bytes());
+        let signed_len = encoded.len() - 64;
+        let signature = account.sign(&encoded[..signed_len]);
+        encoded[signed_len..].copy_from_slice(&signature.to_bytes());
+        assert_eq!(
+            DeviceList::from_bytes(&encoded),
+            Err(IdentityError::InvalidEncoding)
+        );
     }
 }
