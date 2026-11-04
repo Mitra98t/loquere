@@ -1,8 +1,8 @@
 //! Persistenza locale del consumo e della revoca di un invito emesso.
 
-use loquere_identity::{Account, IdentityError, Invitation};
+use loquere_identity::{Account, DeviceCert, IdentityError, Invitation};
 use loquere_store::{RecordLog, StoreError};
-use loquere_wire::{InviteGrant, InviteGrantError};
+use loquere_wire::{FriendRequest, InviteGrant, InviteGrantError};
 use std::path::Path;
 
 const CONSUMED: &[u8] = b"\x01";
@@ -152,6 +152,25 @@ impl PersistentInviteGrant {
         self.grant
             .begin(token, now, request_id)
             .map_err(InviteStoreError::Grant)
+    }
+
+    /// Valida il certificato e lo lega alla chiave della sessione TLS, poi
+    /// prenota il token. Restituisce un'identità da presentare all'utente:
+    /// non approva la richiesta e non aggiunge l'account agli amici.
+    pub fn reserve_friend_request(
+        &mut self,
+        request: &FriendRequest,
+        authenticated_peer: &[u8; 32],
+        now: u32,
+        request_id: u64,
+    ) -> Result<DeviceCert, InviteStoreError> {
+        let cert =
+            DeviceCert::from_bytes(request.certificate()).map_err(InviteStoreError::Identity)?;
+        if cert.device_id().to_bytes() != *authenticated_peer {
+            return Err(InviteStoreError::Identity(IdentityError::KeyMismatch));
+        }
+        self.begin(request.token(), now, request_id)?;
+        Ok(cert)
     }
 
     /// Annulla la prenotazione di una sessione rifiutata o disconnessa.
@@ -321,6 +340,70 @@ mod tests {
         let mut reopened = PersistentInviteGrant::open(&path, &owner, &invite).unwrap();
         assert!(reopened.begin(&invite.token(), 10, 2).is_err());
         drop(reopened);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn request_requires_valid_certificate_tls_binding_and_token() {
+        let path = path();
+        let owner = Account::create("Owner".into(), 1).unwrap();
+        let peer = Account::create("Peer".into(), 1).unwrap();
+        let invite = owner
+            .create_invite(
+                "Owner".into(),
+                100,
+                InviteOptions {
+                    single_use: true,
+                    auto_accept: false,
+                },
+                vec![],
+            )
+            .unwrap();
+        let mut grant = PersistentInviteGrant::create(&path, &owner, &invite).unwrap();
+        let encoded =
+            loquere_wire::encode_friend_request(&invite.token(), &peer.device_cert().to_bytes())
+                .unwrap();
+        let (_, request) = loquere_wire::FriendRequestDecoder::new()
+            .push(&encoded)
+            .unwrap();
+        let request = request.unwrap();
+        assert!(
+            grant
+                .reserve_friend_request(&request, &[0; 32], 50, 1)
+                .is_err()
+        );
+        let cert = grant
+            .reserve_friend_request(&request, &peer.device_public_key().to_bytes(), 50, 2)
+            .unwrap();
+        assert_eq!(cert.account_id(), peer.account_id());
+        assert!(
+            grant
+                .reserve_friend_request(&request, &peer.device_public_key().to_bytes(), 50, 3)
+                .is_err()
+        );
+        grant.cancel(2).unwrap();
+        let bad =
+            loquere_wire::encode_friend_request(&[0; 16], &peer.device_cert().to_bytes()).unwrap();
+        let (_, bad) = loquere_wire::FriendRequestDecoder::new()
+            .push(&bad)
+            .unwrap();
+        assert!(
+            grant
+                .reserve_friend_request(&bad.unwrap(), &peer.device_public_key().to_bytes(), 50, 4)
+                .is_err()
+        );
+        grant
+            .reserve_friend_request(&request, &peer.device_public_key().to_bytes(), 50, 5)
+            .unwrap();
+        grant.accept(5, 50).unwrap();
+        drop(grant);
+        let mut restored = PersistentInviteGrant::open(&path, &owner, &invite).unwrap();
+        assert!(
+            restored
+                .reserve_friend_request(&request, &peer.device_public_key().to_bytes(), 50, 6)
+                .is_err()
+        );
+        drop(restored);
         std::fs::remove_file(path).unwrap();
     }
 }
