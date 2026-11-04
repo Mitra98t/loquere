@@ -363,10 +363,10 @@ mod tests {
         let encoded =
             loquere_wire::encode_friend_request(&invite.token(), &peer.device_cert().to_bytes())
                 .unwrap();
-        let (_, request) = loquere_wire::FriendRequestDecoder::new()
-            .push(&encoded)
-            .unwrap();
-        let request = request.unwrap();
+        // Simula eventi applicativi dopo gate e TLS, non una connessione reale.
+        let mut session = loquere_wire::ProvisionalSession::new();
+        let request = session.receive_control(&encoded).unwrap().unwrap();
+        assert!(!session.is_approved());
         assert!(
             grant
                 .reserve_friend_request(&request, &[0; 32], 50, 1)
@@ -396,6 +396,8 @@ mod tests {
             .reserve_friend_request(&request, &peer.device_public_key().to_bytes(), 50, 5)
             .unwrap();
         grant.accept(5, 50).unwrap();
+        session.approve_verified().unwrap();
+        assert!(session.is_approved());
         drop(grant);
         let mut restored = PersistentInviteGrant::open(&path, &owner, &invite).unwrap();
         assert!(
