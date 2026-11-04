@@ -6,6 +6,7 @@ mod chat_frame;
 mod control_frame;
 mod frame;
 mod gate;
+mod invite_grant;
 mod quic_config;
 mod quic_node;
 mod tls;
@@ -17,6 +18,7 @@ pub use gate::{
     GateDecision, GateError, SilentFilter, gate_initial_datagram, gate_key_id_for,
     is_quic_initial_packet,
 };
+pub use invite_grant::{InviteGrant, InviteGrantError};
 pub use quic_config::{QuicConfigError, build_quic_client_config, build_quic_server_config};
 pub use quic_node::{
     QuicDatagramError, QuicEvent, QuicNode, QuicOutput, QuicStreamError, QuicStreamRead,
