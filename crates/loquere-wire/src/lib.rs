@@ -8,6 +8,7 @@ mod frame;
 mod friend_request;
 mod gate;
 mod invite_grant;
+mod provisional;
 mod quic_config;
 mod quic_node;
 mod tls;
@@ -23,6 +24,7 @@ pub use gate::{
     is_quic_initial_packet,
 };
 pub use invite_grant::{InviteGrant, InviteGrantError};
+pub use provisional::{ProvisionalError, ProvisionalSession};
 pub use quic_config::{QuicConfigError, build_quic_client_config, build_quic_server_config};
 pub use quic_node::{
     QuicDatagramError, QuicEvent, QuicNode, QuicOutput, QuicStreamError, QuicStreamRead,
