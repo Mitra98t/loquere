@@ -22,6 +22,7 @@ use openmls_traits::{
 };
 use std::fmt;
 use std::{collections::HashMap, path::Path};
+use zeroize::{Zeroize, Zeroizing};
 
 /// Suite MLS di Loquere (D-16): X25519, ChaCha20-Poly1305, SHA-256 ed Ed25519.
 pub const LOQUERE_CIPHERSUITE: Ciphersuite =
@@ -59,6 +60,20 @@ impl OpenMlsProvider for LoquereProvider {
 
     fn rand(&self) -> &Self::RandProvider {
         &self.crypto
+    }
+}
+
+impl Drop for LoquereProvider {
+    fn drop(&mut self) {
+        let values = self
+            .storage
+            .values
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (mut key, mut value) in values.drain() {
+            key.zeroize();
+            value.zeroize();
+        }
     }
 }
 
@@ -368,8 +383,8 @@ fn open_state_log(path: impl AsRef<Path>, key: [u8; 32]) -> Result<RecordLog, Ch
 fn encode_snapshot(
     group_id: &[u8],
     entries: &HashMap<Vec<u8>, Vec<u8>>,
-) -> Result<Vec<u8>, ChatError> {
-    let mut bytes = SNAPSHOT_MAGIC.to_vec();
+) -> Result<Zeroizing<Vec<u8>>, ChatError> {
+    let mut bytes = Zeroizing::new(SNAPSHOT_MAGIC.to_vec());
     put_bytes(&mut bytes, group_id)?;
     let count = u32::try_from(entries.len()).map_err(|_| ChatError::InvalidSnapshot)?;
     bytes.extend_from_slice(&count.to_be_bytes());
