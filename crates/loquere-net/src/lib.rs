@@ -671,6 +671,7 @@ mod tests {
         let start = std::time::Instant::now();
         let mut client_connected = false;
         let mut server_connected = false;
+        let mut server_handle = None;
 
         for tick in 0..100 {
             let now = start + Duration::from_millis(tick * 10);
@@ -693,10 +694,13 @@ mod tests {
                         .send(transmit, Some((client_device, &shared_secret)), 1_000_000)
                         .unwrap();
                 }
-                server_connected |= output
-                    .events
-                    .iter()
-                    .any(|event| matches!(event, loquere_wire::QuicEvent::Connected(_)));
+                if let Some(handle) = output.events.iter().find_map(|event| match event {
+                    loquere_wire::QuicEvent::Connected(handle) => Some(*handle),
+                    _ => None,
+                }) {
+                    server_connected = true;
+                    server_handle = Some(handle);
+                }
             }
             if let Some(output) = client
                 .receive_once(&mut client_buffer, now, 1_000_000)
@@ -719,5 +723,65 @@ mod tests {
         assert!(client_connected, "UDP client handshake did not complete");
         assert!(server_connected, "UDP server handshake did not complete");
         assert_eq!(client.node_mut().is_established(client_handle), Some(true));
+
+        // Dopo l'handshake, scambia un frame applicativo su uno stream QUIC
+        // bidirezionale reale, mantenendo il prefisso del gate sui datagrammi.
+        let stream = client.node_mut().open_bi_stream(client_handle).unwrap();
+        let frame = b"\x00\x00\x00\x11loquere-app-frame";
+        assert_eq!(
+            client
+                .node_mut()
+                .write_stream(client_handle, stream, frame)
+                .unwrap(),
+            frame.len()
+        );
+        client
+            .node_mut()
+            .finish_stream(client_handle, stream)
+            .unwrap();
+        let mut received_frame = None;
+        for tick in 100..200 {
+            let now = start + Duration::from_millis(tick * 10);
+            for transmit in client.poll(now).datagrams {
+                client
+                    .send(&transmit, Some((server_device, &shared_secret)), 1_000_000)
+                    .unwrap();
+            }
+            if let Some(output) = server
+                .receive_once(&mut server_buffer, now, 1_000_000)
+                .unwrap()
+            {
+                let stream_opened = output.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        loquere_wire::QuicEvent::Stream {
+                            event: quinn_proto::StreamEvent::Opened {
+                                dir: quinn_proto::Dir::Bi,
+                                ..
+                            },
+                            ..
+                        }
+                    )
+                });
+                for transmit in &output.datagrams {
+                    server
+                        .send(transmit, Some((client_device, &shared_secret)), 1_000_000)
+                        .unwrap();
+                }
+                if stream_opened {
+                    let server_handle = server_handle.expect("server handshake handle");
+                    let incoming = server.node_mut().accept_bi_stream(server_handle).unwrap();
+                    let (read, _) = server
+                        .node_mut()
+                        .read_stream(now, server_handle, incoming, MAX_UDP_PAYLOAD)
+                        .unwrap();
+                    if read.finished {
+                        received_frame = Some(read.bytes);
+                        break;
+                    }
+                }
+            }
+        }
+        assert_eq!(received_frame.as_deref(), Some(frame.as_slice()));
     }
 }
