@@ -7,6 +7,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+loquere-chat = { path = "../../crates/loquere-chat" }
+loquere-crypto = { path = "../../crates/loquere-crypto" }
 loquere-identity = { path = "../../crates/loquere-identity" }
 zeroize.workspace = true
 

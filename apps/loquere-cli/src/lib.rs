@@ -2,6 +2,7 @@
 
 mod terminal;
 
+use loquere_chat::{ChatError, Conversation};
 use loquere_identity::{Account, DeviceRole, IdentityError, Invitation, InviteOptions};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -127,14 +128,80 @@ pub struct IdentitySummary {
     pub created_at: u64,
 }
 
+/// Informazioni pubbliche essenziali di una conversazione MLS locale.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChatSummary {
+    /// Identificatore del gruppo MLS in esadecimale.
+    pub group_id: String,
+    /// Epoch del gruppo.
+    pub epoch: u64,
+}
+
+/// Sblocca un'identità e restituisce l'account per l'uso da parte del nodo.
+pub fn unlock_identity_file(
+    path: impl AsRef<Path>,
+    passphrase: &str,
+) -> Result<Account, IdentityFileError> {
+    let encoded = fs::read(path).map_err(IdentityFileError::Io)?;
+    Account::unprotect_with_passphrase(&encoded, passphrase).map_err(IdentityFileError::Identity)
+}
+
+/// Crea un gruppo MLS persistente usando la chiave dispositivo e una chiave
+/// di storage derivata dal master key dell'identità sbloccata.
+pub fn create_chat_state(
+    identity_path: impl AsRef<Path>,
+    passphrase: &str,
+    state_path: impl AsRef<Path>,
+) -> Result<ChatSummary, ChatFileError> {
+    let account =
+        unlock_identity_file(identity_path, passphrase).map_err(ChatFileError::Identity)?;
+    let storage_key = account
+        .derive_storage_key(b"loquere:mls:state:v1")
+        .map_err(|error| ChatFileError::Identity(IdentityFileError::Identity(error)))?;
+    let device_key = loquere_crypto::SecretKey::from_bytes(*account.device_signing_key());
+    let conversation = Conversation::create_persistent(device_key, state_path, *storage_key)
+        .map_err(ChatFileError::Chat)?;
+    Ok(chat_summary(&conversation))
+}
+
+/// Apre una conversazione MLS cifrata usando l'identità che ne possiede le chiavi.
+pub fn open_chat_state(
+    identity_path: impl AsRef<Path>,
+    passphrase: &str,
+    state_path: impl AsRef<Path>,
+) -> Result<Conversation, ChatFileError> {
+    let account =
+        unlock_identity_file(identity_path, passphrase).map_err(ChatFileError::Identity)?;
+    let storage_key = account
+        .derive_storage_key(b"loquere:mls:state:v1")
+        .map_err(|error| ChatFileError::Identity(IdentityFileError::Identity(error)))?;
+    let device_key = loquere_crypto::SecretKey::from_bytes(*account.device_signing_key());
+    Conversation::open_persistent(device_key, state_path, *storage_key).map_err(ChatFileError::Chat)
+}
+
+/// Ispeziona un gruppo MLS persistente senza esporne lo stato segreto.
+pub fn inspect_chat_state(
+    identity_path: impl AsRef<Path>,
+    passphrase: &str,
+    state_path: impl AsRef<Path>,
+) -> Result<ChatSummary, ChatFileError> {
+    open_chat_state(identity_path, passphrase, state_path)
+        .map(|conversation| chat_summary(&conversation))
+}
+
+fn chat_summary(conversation: &Conversation) -> ChatSummary {
+    ChatSummary {
+        group_id: encode_hex(conversation.group_id()),
+        epoch: conversation.epoch(),
+    }
+}
+
 /// Apre e verifica un'identità protetta da passphrase.
 pub fn inspect_identity_file(
     path: impl AsRef<Path>,
     passphrase: &str,
 ) -> Result<IdentitySummary, IdentityFileError> {
-    let encoded = fs::read(path).map_err(IdentityFileError::Io)?;
-    let account = Account::unprotect_with_passphrase(&encoded, passphrase)
-        .map_err(IdentityFileError::Identity)?;
+    let account = unlock_identity_file(path, passphrase)?;
     let certificate = account.device_cert();
     certificate.verify().map_err(IdentityFileError::Identity)?;
     Ok(IdentitySummary {
@@ -203,6 +270,35 @@ pub fn prompt_passphrase() -> Result<Zeroizing<String>, IdentityFileError> {
     }
     Ok(first)
 }
+
+/// Chiede la passphrase di un'identità esistente senza mostrarla.
+pub fn prompt_existing_passphrase() -> Result<Zeroizing<String>, IdentityFileError> {
+    let passphrase = terminal::read_hidden("Passphrase: ").map_err(IdentityFileError::Io)?;
+    if passphrase.is_empty() {
+        return Err(IdentityFileError::EmptyPassphrase);
+    }
+    Ok(passphrase)
+}
+
+/// Errori nell'apertura o creazione di uno stato chat persistente.
+#[derive(Debug)]
+pub enum ChatFileError {
+    /// Impossibile sbloccare o usare l'identità.
+    Identity(IdentityFileError),
+    /// Operazione MLS o log cifrato non riuscita.
+    Chat(ChatError),
+}
+
+impl std::fmt::Display for ChatFileError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Identity(error) => write!(formatter, "identità non disponibile: {error}"),
+            Self::Chat(error) => write!(formatter, "conversazione non disponibile: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ChatFileError {}
 
 /// Errori della creazione di un file d'identità.
 #[derive(Debug)]
@@ -300,6 +396,12 @@ mod tests {
         assert_eq!(summary.account_id, account_id);
         assert_eq!(summary.device_name, "Portatile");
         assert!(inspect_identity_file(&path, "wrong passphrase").is_err());
+        let state_path = directory.join("conversation.mls");
+        let chat = create_chat_state(&path, "a strong passphrase", &state_path).unwrap();
+        assert_eq!(chat.epoch, 0);
+        let reopened = inspect_chat_state(&path, "a strong passphrase", &state_path).unwrap();
+        assert_eq!(reopened, chat);
+        assert!(open_chat_state(&path, "wrong passphrase", &state_path).is_err());
         std::fs::remove_dir_all(directory).unwrap();
     }
 

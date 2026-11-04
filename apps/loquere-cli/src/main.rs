@@ -101,6 +101,30 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             println!("{}", loquere_cli::format_invite(&summary));
             Ok(())
         }
+        (Some("chat"), Some("init")) => {
+            let (identity_file, state_file) = parse_chat_paths(args)?;
+            let passphrase =
+                loquere_cli::prompt_existing_passphrase().map_err(|error| error.to_string())?;
+            let summary = loquere_cli::create_chat_state(identity_file, &passphrase, state_file)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "Gruppo MLS creato\nID: {}\nEpoch: {}",
+                summary.group_id, summary.epoch
+            );
+            Ok(())
+        }
+        (Some("chat"), Some("show")) => {
+            let (identity_file, state_file) = parse_chat_paths(args)?;
+            let passphrase =
+                loquere_cli::prompt_existing_passphrase().map_err(|error| error.to_string())?;
+            let summary = loquere_cli::inspect_chat_state(identity_file, &passphrase, state_file)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "Conversazione MLS\nID: {}\nEpoch: {}",
+                summary.group_id, summary.epoch
+            );
+            Ok(())
+        }
         (Some("--help" | "-h"), _) | (None, _) => {
             println!("{}", usage());
             Ok(())
@@ -109,8 +133,30 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     }
 }
 
+fn parse_chat_paths(mut args: impl Iterator<Item = String>) -> Result<(String, String), String> {
+    let mut identity_file = None;
+    let mut state_file = None;
+    while let Some(option) = args.next() {
+        let value = args
+            .next()
+            .ok_or_else(|| format!("valore mancante per {option}\n{}", usage()))?;
+        let slot = match option.as_str() {
+            "--identity-file" => &mut identity_file,
+            "--state-file" => &mut state_file,
+            _ => return Err(usage()),
+        };
+        if slot.replace(value).is_some() {
+            return Err(format!("opzione duplicata: {option}"));
+        }
+    }
+    Ok((
+        identity_file.ok_or_else(usage)?,
+        state_file.ok_or_else(usage)?,
+    ))
+}
+
 fn usage() -> String {
-    "uso: loquere-cli id new --name <nome-dispositivo> --output <file>\n     loquere-cli id show --file <file>\n     loquere-cli invite create --file <file> --name <nome> [--expires-in 7d]\n     loquere-cli invite inspect <URI-o-codice-invito>\n     loquere-cli --help".to_owned()
+    "uso: loquere-cli id new --name <nome-dispositivo> --output <file>\n     loquere-cli id show --file <file>\n     loquere-cli invite create --file <file> --name <nome> [--expires-in 7d]\n     loquere-cli invite inspect <URI-o-codice-invito>\n     loquere-cli chat init --identity-file <file> --state-file <file>\n     loquere-cli chat show --identity-file <file> --state-file <file>\n     loquere-cli --help".to_owned()
 }
 
 fn parse_duration(value: &str) -> Result<u64, String> {
@@ -150,6 +196,22 @@ mod tests {
                 "extra".to_owned()
             ]
             .into_iter())
+            .is_err()
+        );
+        assert!(run(["chat", "other"].map(str::to_owned).into_iter()).is_err());
+        assert!(
+            parse_chat_paths(
+                [
+                    "--identity-file",
+                    "id",
+                    "--state-file",
+                    "state",
+                    "--other",
+                    "x"
+                ]
+                .map(str::to_owned)
+                .into_iter()
+            )
             .is_err()
         );
     }

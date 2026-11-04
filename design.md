@@ -1064,6 +1064,8 @@ Ogni contatto ha un **numero di sicurezza** (impronta delle due identità) confr
 loquere-cli id new --name "Alice"            # crea account (portachiavi o passphrase)
 loquere-cli id new --name "Alice" --output identity.loq # identità cifrata con passphrase chiesta senza eco
 loquere-cli id show --file identity.loq          # verifica e mostra i dati pubblici dell'account
+loquere-cli chat init --identity-file identity.loq --state-file conversation.mls # crea un gruppo MLS locale cifrato
+loquere-cli chat show --identity-file identity.loq --state-file conversation.mls # riapre e verifica il gruppo
 loquere-cli device link                       # su un nuovo dispositivo: mostra il codice da approvare
 loquere-cli device approve "TCL-…"            # su un dispositivo Admin: approva, mostra il codice di verifica
 loquere-cli device list

@@ -1103,6 +1103,8 @@ name = "loquere-cli"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "loquere-chat",
+ "loquere-crypto",
  "loquere-identity",
  "windows-sys",
  "zeroize",
