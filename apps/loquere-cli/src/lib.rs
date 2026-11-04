@@ -345,6 +345,21 @@ pub fn create_persistent_invite_from_file(
     Ok(uri)
 }
 
+/// Revoca localmente un invito salvato; non invia notifiche di rete.
+pub fn revoke_invite_file(
+    identity_path: impl AsRef<Path>,
+    passphrase: &str,
+    state_path: impl AsRef<Path>,
+) -> Result<(), String> {
+    let account =
+        unlock_identity_file(identity_path, passphrase).map_err(|error| error.to_string())?;
+    let (mut grant, _) = PersistentInviteGrant::load(state_path, &account)
+        .map_err(|error| format!("impossibile aprire l'invito: {error:?}"))?;
+    grant
+        .revoke()
+        .map_err(|error| format!("impossibile revocare l'invito: {error:?}"))
+}
+
 fn encode_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut encoded = String::with_capacity(bytes.len() * 2);
@@ -559,6 +574,10 @@ mod tests {
             )
             .is_err()
         );
+        revoke_invite_file(&path, "a strong passphrase", &state_path).unwrap();
+        let (mut grant, _) = PersistentInviteGrant::load(&state_path, &account).unwrap();
+        assert!(grant.begin(&expected.token(), 1, 1).is_err());
+        drop(grant);
         std::fs::remove_file(state_path).unwrap();
         let _ = std::fs::remove_file(path);
     }

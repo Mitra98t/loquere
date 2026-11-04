@@ -1086,6 +1086,7 @@ loquere-cli device approve "TCL-…"            # su un dispositivo Admin: appro
 loquere-cli device list
 loquere-cli device revoke "MacBook vecchio"
 loquere-cli invite create --file identity.loq --name "Alice" --state-file invite.log --expires-in 7d # monouso, accettazione manuale; salva stato cifrato
+loquere-cli invite revoke --file identity.loq --state-file invite.log # revoca locale persistente
 loquere-cli invite inspect "loquere://invite/…" # verifica firma e mostra i dati pubblici
 loquere-cli friend add "loquere://invite/…"
 loquere-cli friend list
