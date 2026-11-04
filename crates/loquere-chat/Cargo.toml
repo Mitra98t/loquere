@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 loquere-crypto = { path = "../loquere-crypto" }
+loquere-store = { path = "../loquere-store" }
 openmls.workspace = true
 openmls_basic_credential.workspace = true
 openmls_rust_crypto.workspace = true

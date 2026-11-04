@@ -1090,6 +1090,7 @@ name = "loquere-chat"
 version = "0.1.0"
 dependencies = [
  "loquere-crypto",
+ "loquere-store",
  "openmls",
  "openmls_basic_credential",
  "openmls_rust_crypto",

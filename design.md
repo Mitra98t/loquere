@@ -981,6 +981,8 @@ Loquere/
 
 **D-37. MLS e versione minima Rust.** Le conversazioni usano OpenMLS con la suite `MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519`; la crate MLS e il provider RustCrypto sono fissati alla linea 0.9/0.6. Queste versioni richiedono Rust 1.91, quindi l'MSRV workspace è aggiornata a 1.91 invece di usare una release MLS più vecchia con MSRV non dichiarata. Le chiavi Ed25519 dei messaggi MLS sono le chiavi certificate del dispositivo; storage persistente e ordinamento DAG restano responsabilità dei livelli chat/store.
 
+**D-38. Snapshot MLS cifrati.** Lo stato del key store OpenMLS e l'identificatore del gruppo vengono salvati insieme come snapshot nel log append-only cifrato di `loquere-store`; ad ogni operazione che può mutare lo stato si accoda uno snapshot completo, e al riavvio si ripristina l'ultimo snapshot autenticato prima di caricare il gruppo con OpenMLS. La chiave del log è fornita dal livello identità (derivata dal master key locale), non viene generata né salvata da `loquere-chat`. Questa prima implementazione cresce a ogni snapshot: compattazione/rotazione del log è requisito prima dell'uso prolungato e resta da completare.
+
 ---
 
 ## 17. Sicurezza e privacy
@@ -1128,6 +1130,7 @@ Stesso codice, senza interfaccia: ideale su un Raspberry Pi o un piccolo VPS. Pu
 | Password | `argon2` | protezione chiavi su disco | ✅ |
 | Trasporto | `quinn-proto` | QUIC sans-IO, senza runtime asincrono (D-04) | ✅ |
 | MLS | `openmls` + `openmls_rust_crypto` + `openmls_basic_credential` | implementazione RFC 9420 e provider RustCrypto; suite D-16/D-37 | ✅ |
+| Log locale | `loquere-store` (interno) | snapshot di stato MLS cifrati e autenticati (D-11, D-25, D-38) | ✅ |
 | TLS | `rustls` con provider `ring`, chiavi pubbliche grezze (RFC 7250) | handshake e cifratura del trasporto (D-05) | Rust + assembly (`ring`) |
 | MLS | `openmls` + provider crittografico Rust | tutte le conversazioni (D-16); la dipendenza più pesante aggiunta nella 0.2, da controllare con `cargo tree` | ✅ |
 | UPnP-IGD | `igd-next` (API sincrona) | mappatura porte (D-15) | ✅ |
@@ -1261,6 +1264,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Composizione socket e QUIC | `UdpQuicEndpoint` nel thread `net`; clock e scheduling al chiamante | §5.4, §9.2 (D-35) |
 | Key ID gate direzionale | La credenziale entrante e quella usata per rispondere sono derivate rispetto al destinatario corretto | §8.3 (D-36) |
 | MLS / MSRV | OpenMLS 0.9 e provider 0.6; Rust minimo 1.91 per rispettare MSRV dichiarata | §15.4, §21 (D-37) |
+| Persistenza MLS | Ripristino OpenMLS dall'ultimo snapshot autenticato nel log cifrato; compattazione ancora necessaria | §15.4, §16 (D-38) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 
