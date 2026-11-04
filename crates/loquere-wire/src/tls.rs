@@ -247,7 +247,7 @@ impl ClientCertVerifier for PeerVerifier {
     }
 }
 
-fn public_key_from_spki(spki: &[u8]) -> Option<PublicKey> {
+pub(crate) fn public_key_from_spki(spki: &[u8]) -> Option<PublicKey> {
     if spki.len() != 44 || spki[..12] != ED25519_SPKI_PREFIX {
         return None;
     }

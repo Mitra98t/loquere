@@ -251,6 +251,23 @@ impl QuicNode {
             .map(|connection| !connection.is_handshaking())
     }
 
+    /// Chiave dispositivo autenticata dalla sessione TLS completata. Non
+    /// certifica l'amicizia: il chiamante deve consultare la propria lista.
+    pub fn authenticated_peer(&self, handle: ConnectionHandle) -> Option<[u8; 32]> {
+        let connection = self.connections.get(&handle)?;
+        if connection.is_handshaking() {
+            return None;
+        }
+        let identity = connection.crypto_session().peer_identity()?;
+        let certificates = identity
+            .downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>()
+            .ok()?;
+        if certificates.len() != 1 {
+            return None;
+        }
+        crate::tls::public_key_from_spki(certificates[0].as_ref()).map(|key| key.to_bytes())
+    }
+
     /// Valida un Connection ID generato localmente, per filtrare pacchetti
     /// successivi all'Initial prima di passarli a Quinn.
     pub fn validates_local_connection_id(&self, cid: &[u8]) -> bool {

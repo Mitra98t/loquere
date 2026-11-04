@@ -747,6 +747,14 @@ mod tests {
         assert!(client_connected, "UDP client handshake did not complete");
         assert!(server_connected, "UDP server handshake did not complete");
         assert_eq!(client.node_mut().is_established(client_handle), Some(true));
+        assert_eq!(
+            client.node_mut().authenticated_peer(client_handle),
+            Some(server_device)
+        );
+        assert_eq!(
+            server.node_mut().authenticated_peer(server_handle.unwrap()),
+            Some(client_device)
+        );
 
         // Dopo l'handshake, scambia un frame applicativo su uno stream QUIC
         // bidirezionale reale, mantenendo il prefisso del gate sui datagrammi.
