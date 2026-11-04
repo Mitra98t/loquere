@@ -402,7 +402,9 @@ fn destination_cid(datagram: &[u8]) -> Option<&[u8]> {
         }
         datagram.get(6..6 + cid_len)
     } else {
-        if first & 0x40 == 0 || datagram.len() < 1 + LOCAL_CID_LEN {
+        // RFC 9287 permette al peer di azzerare il bit fisso dopo la
+        // negoziazione; il CID autenticato rimane obbligatorio per passare.
+        if datagram.len() < 1 + LOCAL_CID_LEN {
             return None;
         }
         datagram.get(1..1 + LOCAL_CID_LEN)
@@ -470,6 +472,15 @@ mod tests {
         let forged_short_packet = [0x40; 64];
         assert_eq!(
             filter.inspect(&node, source(4000), &forged_short_packet, 1500),
+            None
+        );
+        let forged_greased_packet = [0x00; 64];
+        assert_eq!(
+            destination_cid(&forged_greased_packet),
+            Some(&forged_greased_packet[1..17])
+        );
+        assert_eq!(
+            filter.inspect(&node, source(4000), &forged_greased_packet, 1500),
             None
         );
         let unsupported = [0xc0, 0, 0, 0, 2, 0];
@@ -727,11 +738,12 @@ mod tests {
         // Dopo l'handshake, scambia un frame applicativo su uno stream QUIC
         // bidirezionale reale, mantenendo il prefisso del gate sui datagrammi.
         let stream = client.node_mut().open_bi_stream(client_handle).unwrap();
-        let frame = b"\x00\x00\x00\x11loquere-app-frame";
+        let payload = b"loquere-app-frame";
+        let frame = loquere_wire::encode_frame(payload, 1024).unwrap();
         assert_eq!(
             client
                 .node_mut()
-                .write_stream(client_handle, stream, frame)
+                .write_stream(client_handle, stream, &frame)
                 .unwrap(),
             frame.len()
         );
@@ -740,9 +752,22 @@ mod tests {
             .finish_stream(client_handle, stream)
             .unwrap();
         let mut received_frame = None;
+        let mut incoming_stream = None;
+        let mut received_bytes = Vec::new();
+        let mut trace = Vec::new();
         for tick in 100..200 {
             let now = start + Duration::from_millis(tick * 10);
-            for transmit in client.poll(now).datagrams {
+            let client_output = client.poll(now);
+            trace.push(format!(
+                "client poll: {:?}, datagrams {:?}",
+                client_output.events,
+                client_output
+                    .datagrams
+                    .iter()
+                    .map(|d| (d.payload.first().copied(), d.payload.len()))
+                    .collect::<Vec<_>>()
+            ));
+            for transmit in client_output.datagrams {
                 client
                     .send(&transmit, Some((server_device, &shared_secret)), 1_000_000)
                     .unwrap();
@@ -751,6 +776,11 @@ mod tests {
                 .receive_once(&mut server_buffer, now, 1_000_000)
                 .unwrap()
             {
+                trace.push(format!(
+                    "server receive: {:?}, {} datagrams",
+                    output.events,
+                    output.datagrams.len()
+                ));
                 let stream_opened = output.events.iter().any(|event| {
                     matches!(
                         event,
@@ -770,18 +800,37 @@ mod tests {
                 }
                 if stream_opened {
                     let server_handle = server_handle.expect("server handshake handle");
-                    let incoming = server.node_mut().accept_bi_stream(server_handle).unwrap();
-                    let (read, _) = server
-                        .node_mut()
-                        .read_stream(now, server_handle, incoming, MAX_UDP_PAYLOAD)
+                    incoming_stream =
+                        Some(server.node_mut().accept_bi_stream(server_handle).unwrap());
+                }
+            }
+            if let Some(incoming) = incoming_stream {
+                let (read, output) = server
+                    .node_mut()
+                    .read_stream(now, server_handle.unwrap(), incoming, MAX_UDP_PAYLOAD)
+                    .unwrap();
+                trace.push(format!(
+                    "server read: {} bytes, finished={}",
+                    read.bytes.len(),
+                    read.finished
+                ));
+                for transmit in &output.datagrams {
+                    server
+                        .send(transmit, Some((client_device, &shared_secret)), 1_000_000)
                         .unwrap();
-                    if read.finished {
-                        received_frame = Some(read.bytes);
-                        break;
-                    }
+                }
+                received_bytes.extend(read.bytes);
+                if read.finished {
+                    received_frame = Some(received_bytes);
+                    break;
                 }
             }
         }
-        assert_eq!(received_frame.as_deref(), Some(frame.as_slice()));
+        let received = received_frame.unwrap_or_else(|| panic!("frame non ricevuto: {trace:#?}"));
+        let mut decoder = loquere_wire::FrameDecoder::new(1024);
+        let (consumed, decoded) = decoder.push(&received).unwrap();
+        assert_eq!(consumed, received.len());
+        assert_eq!(decoded.as_deref(), Some(payload.as_slice()));
+        decoder.finish().unwrap();
     }
 }
