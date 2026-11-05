@@ -14,7 +14,9 @@ mod quic_node;
 mod tls;
 
 pub use chat_frame::{ChatFrameDecoder, ChatFrameError, PendingChatFrame, encode_chat_message};
-pub use control_frame::{ControlHelloDecoder, encode_control_hello};
+pub use control_frame::{
+    ControlHelloDecoder, FriendAckDecoder, encode_control_hello, encode_friend_ack,
+};
 pub use frame::{FrameDecoder, FrameError, encode_frame};
 pub use friend_request::{
     FirstControl, FirstControlDecoder, FriendRequest, FriendRequestDecoder, encode_friend_request,

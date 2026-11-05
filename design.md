@@ -397,6 +397,8 @@ Tra due dispositivi c'è **una connessione QUIC** (ALPN `loquere/1`), che multip
 
 **D-44. Primo controllo per invito.** `FriendRequest` usa lo stesso prefisso u32 BE, payload `versione=1 ‖ tipo=2 ‖ token[16] ‖ DeviceCert`, massimo 4096 byte totali di payload. Il certificato non può essere vuoto; il ricevente lo verifica e confronta la sua chiave dispositivo con il peer TLS autenticato, quindi verifica il token e richiede conferma secondo §7.2. Il parser non autorizza nulla. Il profilo viene scambiato successivamente; gli altri scopi di connessione restano da specificare.
 
+**D-47. Riscontro FriendAck.** Dopo aver validato il token e il certificato del richiedente rispetto a TLS, l'emittente può inviare sul medesimo stream di controllo `lunghezza u32 BE ‖ versione=1 ‖ tipo=3`, senza payload. Il riscontro indica soltanto che la richiesta è stata verificata, non il consenso né l'amicizia; `FriendAccept` e lo scambio delle liste restano separati. Messaggi diversi o troncati sono rifiutati.
+
 - Keepalive: `PING` di QUIC; RTT e perdita vengono dalle statistiche della connessione.
 - Dimensione massima del datagramma: si parte da **1200 byte** (il minimo garantito da QUIC) con scoperta della MTU attiva.
 - **0-RTT disattivato**: i dati 0-RTT sono rigiocabili, e il guadagno (un RTT alla riconnessione) non vale il rischio.
@@ -1304,6 +1306,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | FriendRequest | Record di controllo versionato con token e DeviceCert; validazioni e consenso separati | §8.2 (D-44) |
 | TLS primo contatto | Dopo gate valido, chiave richiedente provvisoria con prova di possesso; solo FriendRequest fino a verifica e consenso | §8.3 (D-45) |
 | Gate primo contatto | Entrambi i versi usano token e DK dell'emittente sul socket temporaneo dell'invitato | §8.3 (D-46) |
+| Riscontro richiesta | FriendAck versionato sul controllo dopo verifica; non equivale a FriendAccept | §8.2 (D-47) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 
