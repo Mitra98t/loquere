@@ -5,6 +5,7 @@
 mod chat_frame;
 mod control_frame;
 mod frame;
+mod friend_accept;
 mod friend_request;
 mod gate;
 mod invite_grant;
@@ -18,6 +19,7 @@ pub use control_frame::{
     ControlHelloDecoder, FriendAckDecoder, encode_control_hello, encode_friend_ack,
 };
 pub use frame::{FrameDecoder, FrameError, encode_frame};
+pub use friend_accept::{FriendAccept, FriendAcceptDecoder, encode_friend_accept};
 pub use friend_request::{
     FirstControl, FirstControlDecoder, FriendRequest, FriendRequestDecoder, encode_friend_request,
 };
