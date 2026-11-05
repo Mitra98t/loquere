@@ -58,6 +58,8 @@ pub struct InviteReceiver {
     guard: Option<ProvisionalEventGuard>,
     session: ProvisionalSession,
     waiting: bool,
+    ack: Option<Vec<u8>>,
+    ack_offset: usize,
 }
 
 struct SystemTimeSource;
@@ -116,6 +118,8 @@ impl InviteReceiver {
             guard: None,
             session: ProvisionalSession::new(),
             waiting: false,
+            ack: None,
+            ack_offset: 0,
         })
     }
 
@@ -126,6 +130,23 @@ impl InviteReceiver {
             .ok_or(InviteReceiverError::Closed)?
             .local_addr()
             .map_err(InviteReceiverError::Socket)
+    }
+
+    /// Accoda il riscontro solo dopo che il chiamante ha verificato token,
+    /// certificato e corrispondenza della chiave TLS. Non accetta l'amicizia.
+    pub fn acknowledge_verified(&mut self) -> Result<(), InviteReceiverError> {
+        if self.endpoint.is_none() || !self.waiting || self.ack.is_some() {
+            return Err(InviteReceiverError::Connection);
+        }
+        self.ack = Some(loquere_wire::encode_friend_ack());
+        Ok(())
+    }
+
+    /// Indica solo che QUIC ha accodato il riscontro, non che sia arrivato.
+    pub fn ack_queued(&self) -> bool {
+        self.ack
+            .as_ref()
+            .is_some_and(|ack| self.ack_offset == ack.len())
     }
 
     /// Avanza i timer e riceve al massimo un datagramma. Tutti gli eventi
@@ -153,6 +174,21 @@ impl InviteReceiver {
             return Err(InviteReceiverError::Socket(
                 UdpSocketError::ReceiveBufferTooSmall,
             ));
+        }
+        if let (Some(ack), Some(handle), Some(stream)) = (&self.ack, self.connection, self.stream)
+            && self.ack_offset < ack.len()
+        {
+            let write = self
+                .endpoint
+                .as_mut()
+                .ok_or(InviteReceiverError::Closed)?
+                .node_mut()
+                .write_stream(handle, stream, &ack[self.ack_offset..]);
+            match write {
+                Ok(written) => self.ack_offset += written,
+                Err(QuicStreamError::Write(quinn_proto::WriteError::Blocked)) => {}
+                Err(error) => return Err(InviteReceiverError::Stream(error)),
+            }
         }
         let polled = self
             .endpoint

@@ -47,6 +47,8 @@ pub struct InviteRequester {
     frame: Zeroizing<Vec<u8>>,
     offset: usize,
     stream: Option<StreamId>,
+    ack: loquere_wire::FriendAckDecoder,
+    acknowledged: bool,
 }
 
 impl InviteRequester {
@@ -96,7 +98,14 @@ impl InviteRequester {
             frame,
             offset: 0,
             stream: None,
+            ack: loquere_wire::FriendAckDecoder::new(),
+            acknowledged: false,
         })
+    }
+
+    /// `true` solo dopo FriendAck verificato; non implica amicizia accettata.
+    pub fn acknowledged(&self) -> bool {
+        self.acknowledged
     }
 
     /// Avanza il tentativo e scrive il frame anche in presenza di scritture
@@ -130,7 +139,7 @@ impl InviteRequester {
             .as_mut()
             .ok_or(InviteRequesterError::Closed)?
             .poll(now);
-        self.process(output, unix_seconds)?;
+        self.process(output, now, unix_seconds)?;
         let output = self
             .endpoint
             .as_mut()
@@ -138,7 +147,7 @@ impl InviteRequester {
             .receive_once(buffer, now, unix_seconds)
             .map_err(InviteRequesterError::Socket)?;
         if let Some(output) = output {
-            self.process(output, unix_seconds)?;
+            self.process(output, now, unix_seconds)?;
         }
         if let Some(stream) = self.stream
             && self.offset < self.frame.len()
@@ -161,46 +170,85 @@ impl InviteRequester {
     fn process(
         &mut self,
         output: QuicOutput,
+        now: Instant,
         unix_seconds: u64,
     ) -> Result<(), InviteRequesterError> {
-        for event in &output.events {
-            match event {
-                QuicEvent::Connected(handle) if *handle == self.handle && self.stream.is_none() => {
-                    let node = self
-                        .endpoint
-                        .as_mut()
-                        .ok_or(InviteRequesterError::Closed)?
-                        .node_mut();
-                    if node.authenticated_peer(self.handle) != Some(self.inviter) {
+        let mut pending = std::collections::VecDeque::from([output]);
+        while let Some(output) = pending.pop_front() {
+            let mut readable = false;
+            for event in &output.events {
+                match event {
+                    QuicEvent::Connected(handle)
+                        if *handle == self.handle && self.stream.is_none() =>
+                    {
+                        let node = self
+                            .endpoint
+                            .as_mut()
+                            .ok_or(InviteRequesterError::Closed)?
+                            .node_mut();
+                        if node.authenticated_peer(self.handle) != Some(self.inviter) {
+                            return Err(InviteRequesterError::Connection);
+                        }
+                        self.stream = Some(
+                            node.open_bi_stream(self.handle)
+                                .map_err(InviteRequesterError::Stream)?,
+                        );
+                    }
+                    QuicEvent::Stream {
+                        connection,
+                        event: quinn_proto::StreamEvent::Writable { id },
+                    } if *connection == self.handle && Some(*id) == self.stream => {}
+                    QuicEvent::Stream {
+                        connection,
+                        event: quinn_proto::StreamEvent::Readable { id },
+                    } if *connection == self.handle && Some(*id) == self.stream => {
+                        readable = true;
+                    }
+                    QuicEvent::Stream {
+                        connection,
+                        event: quinn_proto::StreamEvent::Available { .. },
+                    } if *connection == self.handle => {}
+                    QuicEvent::DatagramsUnblocked(handle) if *handle == self.handle => {}
+                    _ => return Err(InviteRequesterError::Connection),
+                }
+            }
+            for transmit in &output.datagrams {
+                self.endpoint
+                    .as_ref()
+                    .ok_or(InviteRequesterError::Closed)?
+                    .send(
+                        transmit,
+                        Some((self.inviter, self.token.as_slice())),
+                        unix_seconds,
+                    )
+                    .map_err(InviteRequesterError::Socket)?;
+            }
+            if readable {
+                let stream = self.stream.ok_or(InviteRequesterError::Connection)?;
+                let (read, more) = self
+                    .endpoint
+                    .as_mut()
+                    .ok_or(InviteRequesterError::Closed)?
+                    .node_mut()
+                    .read_stream(now, self.handle, stream, MAX_UDP_PAYLOAD)
+                    .map_err(InviteRequesterError::Stream)?;
+                if !read.bytes.is_empty() {
+                    let (used, done) = self
+                        .ack
+                        .push(&read.bytes)
+                        .map_err(InviteRequesterError::Frame)?;
+                    if used != read.bytes.len() {
                         return Err(InviteRequesterError::Connection);
                     }
-                    self.stream = Some(
-                        node.open_bi_stream(self.handle)
-                            .map_err(InviteRequesterError::Stream)?,
-                    );
+                    self.acknowledged |= done;
                 }
-                QuicEvent::Stream {
-                    connection,
-                    event: quinn_proto::StreamEvent::Writable { id },
-                } if *connection == self.handle && Some(*id) == self.stream => {}
-                QuicEvent::Stream {
-                    connection,
-                    event: quinn_proto::StreamEvent::Available { .. },
-                } if *connection == self.handle => {}
-                QuicEvent::DatagramsUnblocked(handle) if *handle == self.handle => {}
-                _ => return Err(InviteRequesterError::Connection),
+                if read.finished && !self.acknowledged {
+                    return Err(InviteRequesterError::Connection);
+                }
+                if !more.events.is_empty() || !more.datagrams.is_empty() {
+                    pending.push_back(more);
+                }
             }
-        }
-        for transmit in &output.datagrams {
-            self.endpoint
-                .as_ref()
-                .ok_or(InviteRequesterError::Closed)?
-                .send(
-                    transmit,
-                    Some((self.inviter, self.token.as_slice())),
-                    unix_seconds,
-                )
-                .map_err(InviteRequesterError::Socket)?;
         }
         Ok(())
     }
@@ -262,9 +310,13 @@ mod tests {
                 assert_eq!(cert.account_id(), peer.account_id());
                 assert_eq!(cert.device_id().to_bytes(), request.peer);
                 received = true;
+                receiver.acknowledge_verified().unwrap();
+            }
+            if requester.acknowledged() {
                 break;
             }
         }
-        assert!(queued && received);
+        assert!(queued && received && requester.acknowledged());
+        assert!(receiver.ack_queued());
     }
 }
