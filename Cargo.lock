@@ -1143,6 +1143,7 @@ dependencies = [
  "loquere-identity",
  "loquere-wire",
  "quinn-proto",
+ "zeroize",
 ]
 
 [[package]]

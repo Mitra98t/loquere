@@ -7,10 +7,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+loquere-crypto = { path = "../loquere-crypto" }
 loquere-wire = { path = "../loquere-wire" }
 quinn-proto.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 loquere-chat = { path = "../loquere-chat" }
-loquere-crypto = { path = "../loquere-crypto" }
 loquere-identity = { path = "../loquere-identity" }

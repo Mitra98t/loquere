@@ -10,6 +10,9 @@ use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
 
+mod invite_receiver;
+pub use invite_receiver::{InviteReceiver, InviteReceiverError, ReceivedFriendRequest};
+
 /// Socket UDP bloccante da possedere nel thread `net`.
 ///
 /// Il buffer di ricezione appartiene al chiamante. L'adapter usa solo API
