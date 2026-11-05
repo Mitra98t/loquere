@@ -30,6 +30,8 @@ pub enum InviteReceiverError {
     Stream(QuicStreamError),
     /// Violazione delle restrizioni della sessione provvisoria.
     Protocol(ProvisionalError),
+    /// Record FriendAccept malformato o troppo grande.
+    Frame(loquere_wire::FrameError),
     /// Connessione non autenticata, chiusa o multipla.
     Connection,
     /// Il ricevitore è stato chiuso dopo un errore.
@@ -60,6 +62,10 @@ pub struct InviteReceiver {
     waiting: bool,
     ack: Option<Vec<u8>>,
     ack_offset: usize,
+    accept_out: Option<Zeroizing<Vec<u8>>>,
+    accept_offset: usize,
+    accept_decoder: loquere_wire::FriendAcceptDecoder,
+    peer_accept: Option<loquere_wire::FriendAccept>,
 }
 
 struct SystemTimeSource;
@@ -120,6 +126,10 @@ impl InviteReceiver {
             waiting: false,
             ack: None,
             ack_offset: 0,
+            accept_out: None,
+            accept_offset: 0,
+            accept_decoder: loquere_wire::FriendAcceptDecoder::new(),
+            peer_accept: None,
         })
     }
 
@@ -147,6 +157,38 @@ impl InviteReceiver {
         self.ack
             .as_ref()
             .is_some_and(|ack| self.ack_offset == ack.len())
+    }
+
+    /// Dopo consenso esplicito, verifica di identità/token e persistenza del
+    /// consumo monouso, accoda i propri dati cifrati da TLS. Il chiamante deve
+    /// avere effettuato e persistito tutte le verifiche prima della chiamata.
+    pub fn accept_after_consent(
+        &mut self,
+        discovery_secret: &[u8; 32],
+        device_list: &[u8],
+    ) -> Result<(), InviteReceiverError> {
+        if !self.ack_queued() || self.accept_out.is_some() || self.endpoint.is_none() {
+            return Err(InviteReceiverError::Connection);
+        }
+        let frame = loquere_wire::encode_friend_accept(discovery_secret, device_list)
+            .map_err(InviteReceiverError::Frame)?;
+        self.session
+            .approve_verified()
+            .map_err(InviteReceiverError::Protocol)?;
+        self.accept_out = Some(frame);
+        Ok(())
+    }
+
+    /// Ritorna i dati dell'altro lato; la firma e l'account sono da verificare.
+    pub fn take_peer_accept(&mut self) -> Option<loquere_wire::FriendAccept> {
+        self.peer_accept.take()
+    }
+
+    /// Indica solo che QUIC ha accodato i dati locali, non la loro consegna.
+    pub fn accept_queued(&self) -> bool {
+        self.accept_out
+            .as_ref()
+            .is_some_and(|frame| self.accept_offset == frame.len())
     }
 
     /// Avanza i timer e riceve al massimo un datagramma. Tutti gli eventi
@@ -186,6 +228,23 @@ impl InviteReceiver {
                 .write_stream(handle, stream, &ack[self.ack_offset..]);
             match write {
                 Ok(written) => self.ack_offset += written,
+                Err(QuicStreamError::Write(quinn_proto::WriteError::Blocked)) => {}
+                Err(error) => return Err(InviteReceiverError::Stream(error)),
+            }
+        }
+        if self.ack_queued()
+            && let (Some(frame), Some(handle), Some(stream)) =
+                (&self.accept_out, self.connection, self.stream)
+            && self.accept_offset < frame.len()
+        {
+            let write = self
+                .endpoint
+                .as_mut()
+                .ok_or(InviteReceiverError::Closed)?
+                .node_mut()
+                .write_stream(handle, stream, &frame[self.accept_offset..]);
+            match write {
+                Ok(written) => self.accept_offset += written,
                 Err(QuicStreamError::Write(quinn_proto::WriteError::Blocked)) => {}
                 Err(error) => return Err(InviteReceiverError::Stream(error)),
             }
@@ -293,6 +352,26 @@ impl InviteReceiver {
                     .read_stream(now, handle, stream, MAX_UDP_PAYLOAD)
                     .map_err(InviteReceiverError::Stream)?;
                 if !read.bytes.is_empty() {
+                    if self.waiting && self.session.is_approved() {
+                        let bytes_len = read.bytes.len();
+                        let parsed = self.accept_decoder.push(&read.bytes);
+                        use zeroize::Zeroize;
+                        read.bytes.zeroize();
+                        let (used, accept) = parsed.map_err(InviteReceiverError::Frame)?;
+                        if used != bytes_len || (accept.is_some() && self.peer_accept.is_some()) {
+                            return Err(InviteReceiverError::Connection);
+                        }
+                        if accept.is_some() {
+                            self.peer_accept = accept;
+                        }
+                        if read.finished {
+                            return Err(InviteReceiverError::Connection);
+                        }
+                        if !more.events.is_empty() || !more.datagrams.is_empty() {
+                            outputs.push_back(more);
+                        }
+                        continue;
+                    }
                     if self.waiting {
                         return Err(InviteReceiverError::Protocol(
                             ProvisionalError::UnexpectedAction,

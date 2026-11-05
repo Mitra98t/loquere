@@ -49,6 +49,10 @@ pub struct InviteRequester {
     stream: Option<StreamId>,
     ack: loquere_wire::FriendAckDecoder,
     acknowledged: bool,
+    accept_decoder: loquere_wire::FriendAcceptDecoder,
+    peer_accept: Option<loquere_wire::FriendAccept>,
+    accept_out: Option<Zeroizing<Vec<u8>>>,
+    accept_offset: usize,
 }
 
 impl InviteRequester {
@@ -100,12 +104,50 @@ impl InviteRequester {
             stream: None,
             ack: loquere_wire::FriendAckDecoder::new(),
             acknowledged: false,
+            accept_decoder: loquere_wire::FriendAcceptDecoder::new(),
+            peer_accept: None,
+            accept_out: None,
+            accept_offset: 0,
         })
     }
 
     /// `true` solo dopo FriendAck verificato; non implica amicizia accettata.
     pub fn acknowledged(&self) -> bool {
         self.acknowledged
+    }
+
+    /// Dati non verificati ricevuti dall'emittente: il chiamante deve
+    /// controllare la lista contro l'invito e il peer TLS prima di fidarsi.
+    pub fn peer_accept(&self) -> Option<&loquere_wire::FriendAccept> {
+        self.peer_accept.as_ref()
+    }
+
+    /// Dopo la verifica del FriendAccept remoto e la conferma dell'utente,
+    /// accoda i propri dati. La persistenza spetta al chiamante.
+    pub fn respond_after_verification(
+        &mut self,
+        secret: &[u8; 32],
+        device_list: &[u8],
+    ) -> Result<(), InviteRequesterError> {
+        if !self.acknowledged
+            || self.peer_accept.is_none()
+            || self.accept_out.is_some()
+            || self.endpoint.is_none()
+        {
+            return Err(InviteRequesterError::Connection);
+        }
+        self.accept_out = Some(
+            loquere_wire::encode_friend_accept(secret, device_list)
+                .map_err(InviteRequesterError::Frame)?,
+        );
+        Ok(())
+    }
+
+    /// Indica soltanto che QUIC ha accodato la risposta, non la consegna.
+    pub fn accept_queued(&self) -> bool {
+        self.accept_out
+            .as_ref()
+            .is_some_and(|frame| self.accept_offset == frame.len())
     }
 
     /// Avanza il tentativo e scrive il frame anche in presenza di scritture
@@ -160,6 +202,21 @@ impl InviteRequester {
                 .write_stream(self.handle, stream, &self.frame[self.offset..]);
             match result {
                 Ok(written) => self.offset += written,
+                Err(QuicStreamError::Write(WriteError::Blocked)) => {}
+                Err(error) => return Err(InviteRequesterError::Stream(error)),
+            }
+        }
+        if let (Some(stream), Some(frame)) = (self.stream, &self.accept_out)
+            && self.accept_offset < frame.len()
+        {
+            let result = self
+                .endpoint
+                .as_mut()
+                .ok_or(InviteRequesterError::Closed)?
+                .node_mut()
+                .write_stream(self.handle, stream, &frame[self.accept_offset..]);
+            match result {
+                Ok(written) => self.accept_offset += written,
                 Err(QuicStreamError::Write(WriteError::Blocked)) => {}
                 Err(error) => return Err(InviteRequesterError::Stream(error)),
             }
@@ -233,14 +290,30 @@ impl InviteRequester {
                     .read_stream(now, self.handle, stream, MAX_UDP_PAYLOAD)
                     .map_err(InviteRequesterError::Stream)?;
                 if !read.bytes.is_empty() {
-                    let (used, done) = self
-                        .ack
-                        .push(&read.bytes)
-                        .map_err(InviteRequesterError::Frame)?;
-                    if used != read.bytes.len() {
-                        return Err(InviteRequesterError::Connection);
+                    let bytes = Zeroizing::new(read.bytes);
+                    let mut remaining = bytes.as_slice();
+                    if !self.acknowledged {
+                        let (used, done) = self
+                            .ack
+                            .push(remaining)
+                            .map_err(InviteRequesterError::Frame)?;
+                        remaining = &remaining[used..];
+                        self.acknowledged = done;
                     }
-                    self.acknowledged |= done;
+                    if self.acknowledged && !remaining.is_empty() {
+                        let (used, accept) = self
+                            .accept_decoder
+                            .push(remaining)
+                            .map_err(InviteRequesterError::Frame)?;
+                        if used != remaining.len()
+                            || (accept.is_some() && self.peer_accept.is_some())
+                        {
+                            return Err(InviteRequesterError::Connection);
+                        }
+                        if accept.is_some() {
+                            self.peer_accept = accept;
+                        }
+                    }
                 }
                 if read.finished && !self.acknowledged {
                     return Err(InviteRequesterError::Connection);
@@ -295,12 +368,31 @@ mod tests {
             Instant::now(),
         )
         .unwrap();
+        assert!(
+            requester
+                .respond_after_verification(
+                    peer.discovery_secret(),
+                    &peer.initial_device_list().unwrap().to_bytes()
+                )
+                .is_err()
+        );
+        assert!(
+            receiver
+                .accept_after_consent(
+                    inviter.discovery_secret(),
+                    &inviter.initial_device_list().unwrap().to_bytes()
+                )
+                .is_err()
+        );
         let mut receive_buffer = vec![0; MAX_UDP_PAYLOAD];
         let mut send_buffer = vec![0; MAX_UDP_PAYLOAD];
         let start = Instant::now();
         let mut received = false;
         let mut queued = false;
-        for tick in 0..200 {
+        let mut inviter_accepted = false;
+        let mut peer_responded = false;
+        let mut reciprocal_received = false;
+        for tick in 0..400 {
             let now = start + Duration::from_millis(tick * 10);
             queued |= requester.step(&mut send_buffer, now, 1000).unwrap();
             if let Some(request) = receiver.step(&mut receive_buffer, now, 1000).unwrap() {
@@ -312,11 +404,46 @@ mod tests {
                 received = true;
                 receiver.acknowledge_verified().unwrap();
             }
-            if requester.acknowledged() {
+            if received && receiver.ack_queued() && !inviter_accepted {
+                // Il consenso e la persistenza del token sono simulati nel test.
+                receiver
+                    .accept_after_consent(
+                        inviter.discovery_secret(),
+                        &inviter.initial_device_list().unwrap().to_bytes(),
+                    )
+                    .unwrap();
+                inviter_accepted = true;
+            }
+            if let Some(accept) = requester.peer_accept()
+                && !peer_responded
+            {
+                let list = loquere_identity::DeviceList::from_bytes(accept.device_list()).unwrap();
+                assert_eq!(list.account_id(), inviter.account_id());
+                assert!(list.contains_device(&inviter.device_public_key().to_bytes()));
+                assert_eq!(accept.discovery_secret(), inviter.discovery_secret());
+                requester
+                    .respond_after_verification(
+                        peer.discovery_secret(),
+                        &peer.initial_device_list().unwrap().to_bytes(),
+                    )
+                    .unwrap();
+                peer_responded = true;
+            }
+            if let Some(accept) = receiver.take_peer_accept() {
+                let list = loquere_identity::DeviceList::from_bytes(accept.device_list()).unwrap();
+                assert_eq!(list.account_id(), peer.account_id());
+                assert!(list.contains_device(&peer.device_public_key().to_bytes()));
+                assert_eq!(accept.discovery_secret(), peer.discovery_secret());
+                reciprocal_received = true;
+            }
+            if reciprocal_received && requester.accept_queued() {
                 break;
             }
         }
         assert!(queued && received && requester.acknowledged());
         assert!(receiver.ack_queued());
+        assert!(
+            inviter_accepted && peer_responded && reciprocal_received && receiver.accept_queued()
+        );
     }
 }
