@@ -401,6 +401,8 @@ Tra due dispositivi c'è **una connessione QUIC** (ALPN `loquere/1`), che multip
 
 **D-48. Contenuto FriendAccept.** Solo dopo il consenso, ciascun lato può inviare sul controllo TLS `lunghezza u32 BE ‖ versione=1 ‖ tipo=4 ‖ segreto_scoperta[32] ‖ DeviceList`; il payload della lista non può essere vuoto ed è limitato a 1 MiB. La lista va verificata e collegata all'account e alla chiave TLS già autenticati prima di salvare l'amicizia. Il segreto è riservato, mantenuto azzerabile e conservato cifrato. Il parser non equivale a consenso né a completamento dell'amicizia; persistenza, conferma reciproca e ripristino dopo interruzioni restano responsabilità dell'engine.
 
+La prima persistenza locale registra una sola volta il segreto verificato nel log cifrato dell'amico già approvato; non implementa ancora la rotazione del segreto né la transazione dell'amicizia completa.
+
 - Keepalive: `PING` di QUIC; RTT e perdita vengono dalle statistiche della connessione.
 - Dimensione massima del datagramma: si parte da **1200 byte** (il minimo garantito da QUIC) con scoperta della MTU attiva.
 - **0-RTT disattivato**: i dati 0-RTT sono rigiocabili, e il guadagno (un RTT alla riconnessione) non vale il rischio.

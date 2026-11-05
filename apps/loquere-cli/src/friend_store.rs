@@ -7,6 +7,8 @@ use loquere_identity::{
 use loquere_store::{RecordLog, StoreError};
 use std::path::Path;
 
+const DISCOVERY_RECORD: &[u8] = b"loquere:friend-discovery:v1\0";
+
 /// Errori nella persistenza della lista fidata.
 #[derive(Debug)]
 pub enum FriendStoreError {
@@ -20,6 +22,8 @@ pub enum FriendStoreError {
     Empty,
     /// Il log appartiene a un account diverso da quello atteso.
     WrongAccount,
+    /// Segreto duplicato, malformato o non corrispondente alla lista fidata.
+    InvalidSecret,
 }
 
 /// Dati di un FriendAccept verificato; non implica consenso o persistenza.
@@ -60,6 +64,7 @@ pub fn verify_friend_accept(
 pub struct FriendStore {
     log: RecordLog,
     trusted: TrustedDeviceList,
+    discovery_secret: Option<zeroize::Zeroizing<[u8; 32]>>,
 }
 
 impl FriendStore {
@@ -118,6 +123,7 @@ impl FriendStore {
         Ok(Self {
             log,
             trusted: TrustedDeviceList::from_approved_friend(approved),
+            discovery_secret: None,
         })
     }
 
@@ -137,13 +143,24 @@ impl FriendStore {
             return Err(FriendStoreError::WrongAccount);
         }
         let mut trusted = TrustedDeviceList::from_approved_friend(first);
+        let mut discovery_secret = None;
         for bytes in records {
-            let next = DeviceList::from_bytes(bytes).map_err(FriendStoreError::Identity)?;
-            trusted.update(next).map_err(FriendStoreError::Update)?;
+            if bytes.starts_with(DISCOVERY_RECORD) {
+                if discovery_secret.is_some() || bytes.len() != DISCOVERY_RECORD.len() + 32 {
+                    return Err(FriendStoreError::InvalidSecret);
+                }
+                let mut secret = zeroize::Zeroizing::new([0; 32]);
+                secret.copy_from_slice(&bytes[DISCOVERY_RECORD.len()..]);
+                discovery_secret = Some(secret);
+            } else {
+                let next = DeviceList::from_bytes(bytes).map_err(FriendStoreError::Identity)?;
+                trusted.update(next).map_err(FriendStoreError::Update)?;
+            }
         }
         Ok(Self {
             log: opened.log,
             trusted,
+            discovery_secret,
         })
     }
 
@@ -161,6 +178,27 @@ impl FriendStore {
     /// Controlla il peer TLS rispetto alla lista fidata corrente.
     pub fn permits_device(&self, peer: &[u8; 32]) -> bool {
         self.trusted.permits_device(peer)
+    }
+
+    /// Salva una volta il segreto di un'accettazione già verificata e approvata.
+    /// La gestione della rotazione del segreto non è ancora implementata.
+    pub fn save_verified_discovery(
+        &mut self,
+        accept: &VerifiedFriendAccept,
+    ) -> Result<(), FriendStoreError> {
+        if self.discovery_secret.is_some() || accept.device_list() != self.trusted.current() {
+            return Err(FriendStoreError::InvalidSecret);
+        }
+        let mut record = zeroize::Zeroizing::new(DISCOVERY_RECORD.to_vec());
+        record.extend_from_slice(accept.discovery_secret());
+        self.log.append(&record).map_err(FriendStoreError::Store)?;
+        self.discovery_secret = Some(zeroize::Zeroizing::new(*accept.discovery_secret()));
+        Ok(())
+    }
+
+    /// Restituisce il segreto fidato se presente; non pubblicarlo.
+    pub fn discovery_secret(&self) -> Option<&[u8; 32]> {
+        self.discovery_secret.as_deref()
     }
 }
 
@@ -292,6 +330,26 @@ mod tests {
         let verified = verify_friend_accept(&accept, friend.account_id(), &peer).unwrap();
         assert_eq!(verified.device_list(), &list);
         assert_eq!(verified.discovery_secret(), friend.discovery_secret());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("loquere-discovery-{}-{nonce}", std::process::id()));
+        let mut store = FriendStore::create(&path, [6; 32], list.clone()).unwrap();
+        store.save_verified_discovery(&verified).unwrap();
+        assert!(store.save_verified_discovery(&verified).is_err());
+        drop(store);
+        let encoded = std::fs::read(&path).unwrap();
+        assert!(
+            !encoded
+                .windows(32)
+                .any(|window| window == friend.discovery_secret())
+        );
+        let store = FriendStore::open(&path, [6; 32], friend.account_id()).unwrap();
+        assert_eq!(store.discovery_secret(), Some(friend.discovery_secret()));
+        drop(store);
+        std::fs::remove_file(path).unwrap();
         assert!(verify_friend_accept(&accept, other.account_id(), &peer).is_err());
         assert!(
             verify_friend_accept(
