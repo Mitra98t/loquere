@@ -362,14 +362,32 @@ pub fn revoke_invite_file(
 }
 
 /// Riceve e verifica una sola richiesta via UDP/QUIC, senza accettarla.
-/// Il socket viene chiuso alla restituzione; non vengono inviati FriendAck o
-/// FriendAccept e nessun contatto viene salvato.
+/// Invia FriendAck dopo la verifica. Alla restituzione chiude il socket, senza
+/// inviare FriendAccept né salvare un contatto.
 pub fn receive_invite_request_once(
     identity_path: impl AsRef<Path>,
     passphrase: &str,
     state_path: impl AsRef<Path>,
     address: std::net::SocketAddr,
     timeout: std::time::Duration,
+) -> Result<loquere_identity::DeviceCert, String> {
+    receive_invite_request_inner(
+        identity_path,
+        passphrase,
+        state_path,
+        address,
+        timeout,
+        |_| {},
+    )
+}
+
+fn receive_invite_request_inner(
+    identity_path: impl AsRef<Path>,
+    passphrase: &str,
+    state_path: impl AsRef<Path>,
+    address: std::net::SocketAddr,
+    timeout: std::time::Duration,
+    on_ready: impl FnOnce(std::net::SocketAddr),
 ) -> Result<loquere_identity::DeviceCert, String> {
     use std::sync::Arc;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -406,6 +424,11 @@ pub fn receive_invite_request_once(
         invite.token(),
     )
     .map_err(|error| format!("impossibile avviare il ricevitore: {error:?}"))?;
+    on_ready(
+        receiver
+            .local_addr()
+            .map_err(|error| format!("socket non disponibile: {error:?}"))?,
+    );
     let deadline = Instant::now()
         .checked_add(timeout)
         .ok_or_else(|| "timeout non valido".to_owned())?;
@@ -420,6 +443,22 @@ pub fn receive_invite_request_once(
             let certificate = grant
                 .reserve_friend_request(&received.request, &received.peer, now, 1)
                 .map_err(|error| format!("richiesta non valida: {error:?}"))?;
+            receiver
+                .acknowledge_verified()
+                .map_err(|error| format!("riscontro non accodato: {error:?}"))?;
+            let ack_deadline = Instant::now() + Duration::from_secs(1);
+            while Instant::now() < ack_deadline {
+                let now = now_unix()?;
+                if let Err(error) = receiver.step(&mut buffer, Instant::now(), u64::from(now)) {
+                    if receiver.ack_queued() {
+                        break;
+                    }
+                    return Err(format!("riscontro non inviato: {error:?}"));
+                }
+            }
+            if !receiver.ack_queued() {
+                return Err("riscontro non accodato entro il timeout".to_owned());
+            }
             grant
                 .cancel(1)
                 .map_err(|error| format!("errore stato invito: {error:?}"))?;
@@ -430,8 +469,8 @@ pub fn receive_invite_request_once(
 }
 
 /// Avvia un tentativo di richiesta dopo conferma esplicita del chiamante.
-/// Il risultato indica soltanto che QUIC ha accodato il frame: non prova la
-/// ricezione, non attende FriendAck e non crea un'amicizia.
+/// Il successo indica la ricezione di FriendAck, non l'accettazione
+/// dell'amicizia né la creazione di un contatto.
 pub fn send_invite_request_once(
     identity_path: impl AsRef<Path>,
     passphrase: &str,
@@ -483,13 +522,18 @@ pub fn send_invite_request_once(
             return Err("invito scaduto".to_owned());
         }
         match requester.step(&mut buffer, Instant::now(), now) {
-            Ok(written) => queued |= written,
+            Ok(written) => {
+                queued |= written;
+                if requester.acknowledged() {
+                    return Ok(());
+                }
+            }
             Err(error) if !queued => return Err(format!("tentativo non riuscito: {error:?}")),
             Err(_) => break,
         }
     }
     if queued {
-        Ok(())
+        Err("richiesta accodata ma nessun riscontro ricevuto".to_owned())
     } else {
         Err("richiesta non accodata entro il timeout".to_owned())
     }
@@ -740,5 +784,88 @@ mod tests {
         drop(grant);
         std::fs::remove_file(state_path).unwrap();
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cli_libraries_exchange_request_and_ack_over_udp() {
+        use std::{net::UdpSocket, sync::mpsc, time::Duration};
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("loquere-cli-net-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let owner = Account::create("Owner".into(), 1).unwrap();
+        let peer = Account::create("Peer".into(), 1).unwrap();
+        let owner_path = directory.join("owner");
+        let peer_path = directory.join("peer");
+        let state_path = directory.join("invite");
+        std::fs::write(
+            &owner_path,
+            owner.protect_with_passphrase("test passphrase").unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            &peer_path,
+            peer.protect_with_passphrase("test passphrase").unwrap(),
+        )
+        .unwrap();
+        let temporary = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = temporary.local_addr().unwrap();
+        drop(temporary);
+        let invite = owner
+            .create_invite(
+                "Owner".into(),
+                0,
+                InviteOptions {
+                    single_use: true,
+                    auto_accept: false,
+                },
+                vec![loquere_identity::InviteCandidate {
+                    address: address.ip(),
+                    port: address.port(),
+                }],
+            )
+            .unwrap();
+        drop(PersistentInviteGrant::create(&state_path, &owner, &invite).unwrap());
+        let code = invite.to_uri().unwrap();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let owner_thread = owner_path.clone();
+        let state_thread = state_path.clone();
+        let listener = std::thread::spawn(move || {
+            receive_invite_request_inner(
+                owner_thread,
+                "test passphrase",
+                state_thread,
+                address,
+                Duration::from_secs(30),
+                |bound| {
+                    ready_tx.send(bound).unwrap();
+                },
+            )
+        });
+        assert_eq!(
+            ready_rx.recv_timeout(Duration::from_secs(30)).unwrap(),
+            address
+        );
+        send_invite_request_once(
+            &peer_path,
+            "test passphrase",
+            &code,
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        let cert = listener.join().unwrap().unwrap();
+        assert_eq!(cert.account_id(), peer.account_id());
+        assert_eq!(cert.device_id(), peer.device_public_key());
+        let (mut grant, _) = PersistentInviteGrant::load(&state_path, &owner).unwrap();
+        grant.begin(&invite.token(), 1, 99).unwrap(); // FriendAck non consuma il token.
+        grant.cancel(99).unwrap();
+        drop(grant);
+        std::fs::remove_file(owner_path).unwrap();
+        std::fs::remove_file(peer_path).unwrap();
+        std::fs::remove_file(state_path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 }

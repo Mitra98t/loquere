@@ -213,7 +213,9 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
                 code,
                 std::time::Duration::from_secs(seconds),
             )?;
-            println!("Richiesta accodata da QUIC; consegna e amicizia NON sono confermate.");
+            println!(
+                "Richiesta verificata dal destinatario (FriendAck); amicizia NON ancora accettata."
+            );
             Ok(())
         }
         (Some("chat"), Some("init")) => {
