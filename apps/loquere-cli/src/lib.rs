@@ -429,6 +429,72 @@ pub fn receive_invite_request_once(
     Err("nessuna richiesta ricevuta entro il timeout".to_owned())
 }
 
+/// Avvia un tentativo di richiesta dopo conferma esplicita del chiamante.
+/// Il risultato indica soltanto che QUIC ha accodato il frame: non prova la
+/// ricezione, non attende FriendAck e non crea un'amicizia.
+pub fn send_invite_request_once(
+    identity_path: impl AsRef<Path>,
+    passphrase: &str,
+    invite_code: &str,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    if timeout.is_zero() || timeout > Duration::from_secs(60) {
+        return Err("timeout non valido: massimo un minuto".to_owned());
+    }
+    let invite = Invitation::parse_code(invite_code).map_err(|error| error.to_string())?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_secs();
+    let now = u32::try_from(now).map_err(|_| "orologio oltre il limite supportato".to_owned())?;
+    invite.verify_at(now).map_err(|error| error.to_string())?;
+    let candidate = invite
+        .candidates()
+        .first()
+        .ok_or_else(|| "invito senza candidati di rete".to_owned())?;
+    let destination = std::net::SocketAddr::new(candidate.address, candidate.port);
+    let account =
+        unlock_identity_file(identity_path, passphrase).map_err(|error| error.to_string())?;
+    let local = Arc::new(loquere_crypto::SecretKey::from_bytes(
+        *account.device_signing_key(),
+    ));
+    let mut requester = loquere_net::InviteRequester::connect(
+        destination,
+        invite.device_id(),
+        invite.token(),
+        local,
+        &account.device_cert().to_bytes(),
+        Instant::now(),
+    )
+    .map_err(|error| format!("connessione non avviata: {error:?}"))?;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| "timeout non valido".to_owned())?;
+    let mut buffer = Zeroizing::new(vec![0; 65_507]);
+    let mut queued = false;
+    while Instant::now() < deadline {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_secs();
+        if invite.expires_at() != 0 && now > u64::from(invite.expires_at()) {
+            return Err("invito scaduto".to_owned());
+        }
+        match requester.step(&mut buffer, Instant::now(), now) {
+            Ok(written) => queued |= written,
+            Err(error) if !queued => return Err(format!("tentativo non riuscito: {error:?}")),
+            Err(_) => break,
+        }
+    }
+    if queued {
+        Ok(())
+    } else {
+        Err("richiesta non accodata entro il timeout".to_owned())
+    }
+}
+
 fn encode_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut encoded = String::with_capacity(bytes.len() * 2);
@@ -635,6 +701,15 @@ mod tests {
         )
         .unwrap();
         let expected = Invitation::parse_code(&code).unwrap();
+        assert!(
+            send_invite_request_once(
+                &path,
+                "a strong passphrase",
+                &code,
+                std::time::Duration::from_secs(1)
+            )
+            .is_err()
+        );
         let (_, restored) = PersistentInviteGrant::load(&state_path, &account).unwrap();
         assert_eq!(restored, expected);
         assert!(

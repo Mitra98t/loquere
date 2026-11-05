@@ -169,6 +169,53 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             );
             Ok(())
         }
+        (Some("invite"), Some("request")) => {
+            use std::io::{IsTerminal, Write};
+            let options = parse_chat_options(args, &["--file", "--invite", "--timeout"])?;
+            let identity = required_option(&options, "--file")?;
+            let code = required_option(&options, "--invite")?;
+            let seconds = parse_duration(options.get("--timeout").map_or("10s", String::as_str))?;
+            if seconds > 60 {
+                return Err("timeout massimo: un minuto".to_owned());
+            }
+            let summary = loquere_cli::inspect_invite(code)
+                .map_err(|error| format!("invito non valido: {error}"))?;
+            let candidate = summary
+                .candidates
+                .first()
+                .ok_or_else(|| "invito senza candidati di rete".to_owned())?;
+            if !std::io::stdin().is_terminal() {
+                return Err("serve un terminale per confermare il contatto".to_owned());
+            }
+            eprintln!(
+                "Contattare {} (account {}) all'indirizzo {}:{}?",
+                summary.display_name.escape_debug(),
+                summary.account_id,
+                candidate.address,
+                candidate.port
+            );
+            eprint!("Scrivi SI per confermare: ");
+            std::io::stderr()
+                .flush()
+                .map_err(|error| error.to_string())?;
+            let mut answer = String::new();
+            std::io::stdin()
+                .read_line(&mut answer)
+                .map_err(|error| error.to_string())?;
+            if answer.trim() != "SI" {
+                return Err("richiesta annullata".to_owned());
+            }
+            let passphrase =
+                loquere_cli::prompt_existing_passphrase().map_err(|error| error.to_string())?;
+            loquere_cli::send_invite_request_once(
+                identity,
+                &passphrase,
+                code,
+                std::time::Duration::from_secs(seconds),
+            )?;
+            println!("Richiesta accodata da QUIC; consegna e amicizia NON sono confermate.");
+            Ok(())
+        }
         (Some("chat"), Some("init")) => {
             let (identity_file, state_file) = parse_chat_paths(args)?;
             let passphrase =
@@ -400,7 +447,7 @@ fn write_new_file(path: &str, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "uso: loquere-cli id new --name <nome-dispositivo> --output <file>\n     loquere-cli id show --file <file>\n     loquere-cli invite create --file <file> --name <nome> --state-file <file> [--expires-in 7d] [--candidate <IP:porta>]...\n     loquere-cli invite inspect <URI-o-codice-invito>\n     loquere-cli invite revoke --file <file> --state-file <file>\n     loquere-cli invite listen --file <file> --state-file <file> --listen <IP:porta> [--timeout 60s]\n     loquere-cli chat init --identity-file <file> --state-file <file>\n     loquere-cli chat show --identity-file <file> --state-file <file>\n     loquere-cli chat key-package --identity-file <file> --state-file <file> --output <file>\n     loquere-cli chat add-member --identity-file <file> --state-file <file> --key-package <file> --welcome-out <file> --tree-out <file> --commit-out <file>\n     loquere-cli chat join --identity-file <file> --state-file <file> --welcome <file> --tree <file>\n     loquere-cli chat apply-commit --identity-file <file> --state-file <file> --commit <file>\n     loquere-cli chat send --identity-file <file> --state-file <file> --message <testo> --output <file>\n     loquere-cli chat receive --identity-file <file> --state-file <file> --input <file>\n     loquere-cli --help".to_owned()
+    "uso: loquere-cli id new --name <nome-dispositivo> --output <file>\n     loquere-cli id show --file <file>\n     loquere-cli invite create --file <file> --name <nome> --state-file <file> [--expires-in 7d] [--candidate <IP:porta>]...\n     loquere-cli invite inspect <URI-o-codice-invito>\n     loquere-cli invite revoke --file <file> --state-file <file>\n     loquere-cli invite listen --file <file> --state-file <file> --listen <IP:porta> [--timeout 60s]\n     loquere-cli invite request --file <file> --invite <codice> [--timeout 10s]\n     loquere-cli chat init --identity-file <file> --state-file <file>\n     loquere-cli chat show --identity-file <file> --state-file <file>\n     loquere-cli chat key-package --identity-file <file> --state-file <file> --output <file>\n     loquere-cli chat add-member --identity-file <file> --state-file <file> --key-package <file> --welcome-out <file> --tree-out <file> --commit-out <file>\n     loquere-cli chat join --identity-file <file> --state-file <file> --welcome <file> --tree <file>\n     loquere-cli chat apply-commit --identity-file <file> --state-file <file> --commit <file>\n     loquere-cli chat send --identity-file <file> --state-file <file> --message <testo> --output <file>\n     loquere-cli chat receive --identity-file <file> --state-file <file> --input <file>\n     loquere-cli --help".to_owned()
 }
 
 fn parse_duration(value: &str) -> Result<u64, String> {

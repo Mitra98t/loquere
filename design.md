@@ -1095,6 +1095,7 @@ loquere-cli invite create --file identity.loq --name "Alice" --state-file invite
 loquere-cli invite create --file identity.loq --name "Alice" --state-file invite.log --candidate 192.168.1.10:4567 # indirizzo scelto esplicitamente
 loquere-cli invite revoke --file identity.loq --state-file invite.log # revoca locale persistente
 loquere-cli invite listen --file identity.loq --state-file invite.log --listen 192.168.1.10:4567 --timeout 60s # riceve una richiesta, senza accettarla
+loquere-cli invite request --file identity.loq --invite "loquere://invite/…" --timeout 10s # chiede conferma; consegna non ancora confermata
 loquere-cli invite inspect "loquere://invite/…" # verifica firma e mostra i dati pubblici
 loquere-cli friend add "loquere://invite/…"
 loquere-cli friend list
