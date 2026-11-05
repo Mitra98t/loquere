@@ -11,7 +11,9 @@ use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
 
 mod invite_receiver;
+mod invite_requester;
 pub use invite_receiver::{InviteReceiver, InviteReceiverError, ReceivedFriendRequest};
+pub use invite_requester::{InviteRequester, InviteRequesterError};
 
 /// Socket UDP bloccante da possedere nel thread `net`.
 ///
