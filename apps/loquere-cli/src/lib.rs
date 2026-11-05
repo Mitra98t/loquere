@@ -361,6 +361,74 @@ pub fn revoke_invite_file(
         .map_err(|error| format!("impossibile revocare l'invito: {error:?}"))
 }
 
+/// Riceve e verifica una sola richiesta via UDP/QUIC, senza accettarla.
+/// Il socket viene chiuso alla restituzione; non vengono inviati FriendAck o
+/// FriendAccept e nessun contatto viene salvato.
+pub fn receive_invite_request_once(
+    identity_path: impl AsRef<Path>,
+    passphrase: &str,
+    state_path: impl AsRef<Path>,
+    address: std::net::SocketAddr,
+    timeout: std::time::Duration,
+) -> Result<loquere_identity::DeviceCert, String> {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    let now_unix = || -> Result<u32, String> {
+        let seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_secs();
+        u32::try_from(seconds).map_err(|_| "orologio oltre il limite supportato".to_owned())
+    };
+    if timeout.is_zero() || timeout > Duration::from_secs(3600) {
+        return Err("timeout non valido: massimo un'ora".to_owned());
+    }
+    let owner =
+        unlock_identity_file(identity_path, passphrase).map_err(|error| error.to_string())?;
+    let (mut grant, invite) = PersistentInviteGrant::load(state_path, &owner)
+        .map_err(|error| format!("impossibile aprire l'invito: {error:?}"))?;
+    let now = now_unix()?;
+    invite.verify_at(now).map_err(|error| error.to_string())?;
+    grant
+        .begin(&invite.token(), now, 0)
+        .map_err(|error| format!("invito non disponibile: {error:?}"))?;
+    grant
+        .cancel(0)
+        .map_err(|error| format!("invito non disponibile: {error:?}"))?;
+    let key = Arc::new(loquere_crypto::SecretKey::from_bytes(
+        *owner.device_signing_key(),
+    ));
+    let mut receiver = loquere_net::InviteReceiver::bind_system(
+        address,
+        Duration::from_millis(25),
+        loquere_net::EcnHandling::IgnoreExplicitly,
+        key,
+        invite.token(),
+    )
+    .map_err(|error| format!("impossibile avviare il ricevitore: {error:?}"))?;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| "timeout non valido".to_owned())?;
+    let mut buffer = zeroize::Zeroizing::new(vec![0; 65_507]);
+    while Instant::now() < deadline {
+        let now = now_unix()?;
+        invite.verify_at(now).map_err(|error| error.to_string())?;
+        if let Some(received) = receiver
+            .step(&mut buffer, Instant::now(), u64::from(now))
+            .map_err(|error| format!("ricezione richiesta non riuscita: {error:?}"))?
+        {
+            let certificate = grant
+                .reserve_friend_request(&received.request, &received.peer, now, 1)
+                .map_err(|error| format!("richiesta non valida: {error:?}"))?;
+            grant
+                .cancel(1)
+                .map_err(|error| format!("errore stato invito: {error:?}"))?;
+            return Ok(certificate);
+        }
+    }
+    Err("nessuna richiesta ricevuta entro il timeout".to_owned())
+}
+
 fn encode_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut encoded = String::with_capacity(bytes.len() * 2);
@@ -569,6 +637,16 @@ mod tests {
         let expected = Invitation::parse_code(&code).unwrap();
         let (_, restored) = PersistentInviteGrant::load(&state_path, &account).unwrap();
         assert_eq!(restored, expected);
+        assert!(
+            receive_invite_request_once(
+                &path,
+                "a strong passphrase",
+                &state_path,
+                "127.0.0.1:12345".parse().unwrap(),
+                std::time::Duration::from_secs(1),
+            )
+            .is_err()
+        ); // l'invito scaduto è rifiutato prima di aprire il socket
         assert_eq!(restored.candidates()[0].port, 4444);
         assert!(
             create_persistent_invite_from_file(

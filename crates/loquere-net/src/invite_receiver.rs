@@ -60,7 +60,32 @@ pub struct InviteReceiver {
     waiting: bool,
 }
 
+struct SystemTimeSource;
+
+impl TimeSource for SystemTimeSource {
+    fn now(&self) -> std::time::SystemTime {
+        std::time::SystemTime::now()
+    }
+}
+
 impl InviteReceiver {
+    /// Variante per un nodo reale: usa l'orologio del sistema per i token QUIC.
+    pub fn bind_system(
+        address: SocketAddr,
+        timeout: Duration,
+        ecn: EcnHandling,
+        key: Arc<SecretKey>,
+        token: [u8; 16],
+    ) -> Result<Self, InviteReceiverError> {
+        Self::bind(
+            address,
+            timeout,
+            ecn,
+            key,
+            token,
+            Arc::new(SystemTimeSource),
+        )
+    }
     /// Apre un socket dedicato a un solo invito; il chiamante sceglie il bind.
     pub fn bind(
         address: SocketAddr,
