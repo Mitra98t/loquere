@@ -16,7 +16,8 @@ mod tls;
 
 pub use chat_frame::{ChatFrameDecoder, ChatFrameError, PendingChatFrame, encode_chat_message};
 pub use control_frame::{
-    ControlHelloDecoder, FriendAckDecoder, encode_control_hello, encode_friend_ack,
+    ControlHelloDecoder, FriendAckDecoder, FriendCompleteDecoder, encode_control_hello,
+    encode_friend_ack, encode_friend_complete,
 };
 pub use frame::{FrameDecoder, FrameError, encode_frame};
 pub use friend_accept::{FriendAccept, FriendAcceptDecoder, encode_friend_accept};

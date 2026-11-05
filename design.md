@@ -403,6 +403,8 @@ Tra due dispositivi c'è **una connessione QUIC** (ALPN `loquere/1`), che multip
 
 La persistenza locale può inizializzare lista e segreto verificati nello stesso record cifrato autenticato, evitando uno stato iniziale parziale; resta disponibile la lettura dei log precedenti. Non implementa ancora la rotazione del segreto né la transazione distribuita dell'amicizia completa.
 
+**D-49. Riscontro di persistenza.** Dopo aver ricevuto e verificato il `FriendAccept` reciproco e aver salvato i dati dell'altro lato, l'emittente dell'invito può inviare sullo stesso stream `lunghezza u32 BE ‖ versione=1 ‖ tipo=5` (`FriendComplete`). Il richiedente deve aver salvato localmente prima di inviare il proprio `FriendAccept` e considera confermata la persistenza remota soltanto dopo questo riscontro. Un'interruzione prima del riscontro lascia uno stato potenzialmente parziale da recuperare; non va presentata come successo completo.
+
 - Keepalive: `PING` di QUIC; RTT e perdita vengono dalle statistiche della connessione.
 - Dimensione massima del datagramma: si parte da **1200 byte** (il minimo garantito da QUIC) con scoperta della MTU attiva.
 - **0-RTT disattivato**: i dati 0-RTT sono rigiocabili, e il guadagno (un RTT alla riconnessione) non vale il rischio.
@@ -1312,6 +1314,7 @@ Tutte le domande delle revisioni sono chiuse. Questo è il riepilogo delle scelt
 | Gate primo contatto | Entrambi i versi usano token e DK dell'emittente sul socket temporaneo dell'invitato | §8.3 (D-46) |
 | Riscontro richiesta | FriendAck versionato sul controllo dopo verifica; non equivale a FriendAccept | §8.2 (D-47) |
 | Dati FriendAccept | Dopo consenso, DeviceList firmata e segreto scoperta cifrati dal TLS; verifiche e persistenza separate | §8.2 (D-48) |
+| Riscontro persistenza | FriendComplete dopo verifica e salvataggio reciproco; interruzioni restano da recuperare | §8.2 (D-49) |
 
 ### 25.1 Da verificare con i prototipi (M0–M1)
 

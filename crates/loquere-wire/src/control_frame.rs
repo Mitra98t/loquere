@@ -5,6 +5,7 @@ use crate::{FrameDecoder, FrameError, encode_frame};
 const MAX_CONTROL_FRAME: usize = 256;
 const HELLO: [u8; 2] = [1, 1];
 const FRIEND_ACK: [u8; 2] = [1, 3];
+const FRIEND_COMPLETE: [u8; 2] = [1, 5];
 
 /// Codifica `Hello{}`; il peer deve comunque verificare l'amicizia.
 pub fn encode_control_hello() -> Vec<u8> {
@@ -14,6 +15,66 @@ pub fn encode_control_hello() -> Vec<u8> {
 /// Riscontro di una richiesta verificata, non accettazione dell'amicizia.
 pub fn encode_friend_ack() -> Vec<u8> {
     encode_frame(&FRIEND_ACK, MAX_CONTROL_FRAME).expect("FriendAck rientra nel limite")
+}
+
+/// Conferma la persistenza locale dell'amicizia, non la ricezione da remoto.
+pub fn encode_friend_complete() -> Vec<u8> {
+    encode_frame(&FRIEND_COMPLETE, MAX_CONTROL_FRAME).expect("FriendComplete rientra nel limite")
+}
+
+/// Decoder del riscontro finale di persistenza dell'altro lato.
+pub struct FriendCompleteDecoder {
+    inner: FrameDecoder,
+    done: bool,
+    failed: bool,
+}
+
+impl Default for FriendCompleteDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FriendCompleteDecoder {
+    /// Prepara la lettura di un solo riscontro finale.
+    pub fn new() -> Self {
+        Self {
+            inner: FrameDecoder::new(MAX_CONTROL_FRAME),
+            done: false,
+            failed: false,
+        }
+    }
+
+    /// Legge al massimo un record; il chiamante deve gestire i byte rimanenti.
+    pub fn push(&mut self, bytes: &[u8]) -> Result<(usize, bool), FrameError> {
+        if self.done || self.failed {
+            return Err(FrameError::Failed);
+        }
+        let (used, record) = self.inner.push(bytes).inspect_err(|_| self.failed = true)?;
+        match record {
+            None => Ok((used, false)),
+            Some(record) if record == FRIEND_COMPLETE => {
+                self.done = true;
+                Ok((used, true))
+            }
+            Some(_) => {
+                self.failed = true;
+                Err(FrameError::Failed)
+            }
+        }
+    }
+
+    /// Rifiuta chiusure premature o successive a errori.
+    pub fn finish(&mut self) -> Result<(), FrameError> {
+        if self.failed {
+            return Err(FrameError::Failed);
+        }
+        if !self.done {
+            self.failed = true;
+            return Err(FrameError::Truncated);
+        }
+        Ok(())
+    }
 }
 
 /// Parser incrementale per il riscontro alla richiesta d'amicizia.
@@ -183,5 +244,21 @@ mod tests {
             Err(FrameError::Failed)
         );
         assert_eq!(decoder.finish(), Err(FrameError::Failed));
+    }
+
+    #[test]
+    fn completion_is_distinct_from_ack_and_handles_fragmentation() {
+        let complete = encode_friend_complete();
+        for split in 0..complete.len() {
+            let mut decoder = FriendCompleteDecoder::new();
+            assert_eq!(decoder.push(&complete[..split]), Ok((split, false)));
+            assert_eq!(
+                decoder.push(&complete[split..]),
+                Ok((complete.len() - split, true))
+            );
+            assert_eq!(decoder.finish(), Ok(()));
+        }
+        let mut decoder = FriendCompleteDecoder::new();
+        assert_eq!(decoder.push(&encode_friend_ack()), Err(FrameError::Failed));
     }
 }
