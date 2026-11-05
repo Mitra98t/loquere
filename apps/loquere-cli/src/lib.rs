@@ -4,7 +4,7 @@ mod friend_store;
 mod invite_store;
 mod terminal;
 
-pub use friend_store::{FriendStore, FriendStoreError};
+pub use friend_store::{FriendStore, FriendStoreError, VerifiedFriendAccept, verify_friend_accept};
 pub use invite_store::{InviteStoreError, PersistentInviteGrant};
 
 use loquere_chat::{ChatError, Conversation, MemberWelcome};

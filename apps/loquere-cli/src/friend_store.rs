@@ -22,6 +22,40 @@ pub enum FriendStoreError {
     WrongAccount,
 }
 
+/// Dati di un FriendAccept verificato; non implica consenso o persistenza.
+pub struct VerifiedFriendAccept {
+    device_list: DeviceList,
+    discovery_secret: zeroize::Zeroizing<[u8; 32]>,
+}
+
+impl VerifiedFriendAccept {
+    /// Lista firmata corrispondente all'account e al peer TLS attesi.
+    pub fn device_list(&self) -> &DeviceList {
+        &self.device_list
+    }
+    /// Segreto riservato da salvare cifrato e non pubblicare.
+    pub fn discovery_secret(&self) -> &[u8; 32] {
+        &self.discovery_secret
+    }
+}
+
+/// Verifica la lista di un FriendAccept contro l'account e la chiave TLS
+/// autenticata. Non approva l'amicizia e non salva il segreto ricevuto.
+pub fn verify_friend_accept(
+    accept: &loquere_wire::FriendAccept,
+    expected_account: AccountId,
+    authenticated_peer: &[u8; 32],
+) -> Result<VerifiedFriendAccept, FriendStoreError> {
+    let list = DeviceList::from_bytes(accept.device_list()).map_err(FriendStoreError::Identity)?;
+    if list.account_id() != expected_account || !list.contains_device(authenticated_peer) {
+        return Err(FriendStoreError::WrongAccount);
+    }
+    Ok(VerifiedFriendAccept {
+        device_list: list,
+        discovery_secret: zeroize::Zeroizing::new(*accept.discovery_secret()),
+    })
+}
+
 /// Log cifrato per un amico approvato; non implementa il flusso di amicizia.
 pub struct FriendStore {
     log: RecordLog,
@@ -241,5 +275,39 @@ mod tests {
         assert!(FriendStore::open_for_account(&path, &other, friend.account_id()).is_err());
         assert!(FriendStore::open_for_account(&path, &owner, other.account_id()).is_err());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn friend_accept_requires_matching_signed_list_and_active_tls_peer() {
+        let friend = Account::create("Friend".into(), 1).unwrap();
+        let other = Account::create("Other".into(), 1).unwrap();
+        let list = friend.initial_device_list().unwrap();
+        let frame = loquere_wire::encode_friend_accept(friend.discovery_secret(), &list.to_bytes())
+            .unwrap();
+        let (_, accept) = loquere_wire::FriendAcceptDecoder::new()
+            .push(&frame)
+            .unwrap();
+        let accept = accept.unwrap();
+        let peer = friend.device_public_key().to_bytes();
+        let verified = verify_friend_accept(&accept, friend.account_id(), &peer).unwrap();
+        assert_eq!(verified.device_list(), &list);
+        assert_eq!(verified.discovery_secret(), friend.discovery_secret());
+        assert!(verify_friend_accept(&accept, other.account_id(), &peer).is_err());
+        assert!(
+            verify_friend_accept(
+                &accept,
+                friend.account_id(),
+                &other.device_public_key().to_bytes()
+            )
+            .is_err()
+        );
+        let mut altered = list.to_bytes();
+        altered[10] ^= 1;
+        let frame =
+            loquere_wire::encode_friend_accept(friend.discovery_secret(), &altered).unwrap();
+        let (_, accept) = loquere_wire::FriendAcceptDecoder::new()
+            .push(&frame)
+            .unwrap();
+        assert!(verify_friend_accept(&accept.unwrap(), friend.account_id(), &peer).is_err());
     }
 }
